@@ -95,25 +95,28 @@ inline int evaluate(Position position) {
     return material * 100 + mobility * 12 + exposed * 8;
 }
 
-inline std::vector<Move> generate(Position position, int side, const std::vector<PastMove>& history) {
-    std::vector<Move> banned;
+template<class AddMove>
+inline void generate(Position position, int side, const std::vector<PastMove>& history, AddMove add) {
+    std::array<Bits, 49> banned{};
     for (const auto& past : history)
-        if (past.side == side && past.position == position) banned.push_back(past.move);
-    std::vector<Move> moves;
-    moves.reserve(256);
+        if (past.side == side && past.position == position) banned[past.move.from] |= Bits{1} << past.move.to;
     Bits empty = boardMask & ~(position.us | position.them);
     Bits clones = 0;
     for (Bits pieces = position.us; pieces; pieces &= pieces - 1) {
         int from = first(pieces);
-        Bits targets = ((adjacent[from] & ~clones) | jumps[from]) & empty;
+        Bits targets = ((adjacent[from] & ~clones) | jumps[from]) & empty & ~banned[from];
         for (; targets; targets &= targets - 1) {
             int to = first(targets);
-            Move move{from, to};
-            if (std::find(banned.begin(), banned.end(), move) != banned.end()) continue;
-            moves.push_back(move);
+            add(Move{from, to});
             if (adjacent[from] & (Bits{1} << to)) clones |= Bits{1} << to;
         }
     }
+}
+
+inline std::vector<Move> generate(Position position, int side, const std::vector<PastMove>& history) {
+    std::vector<Move> moves;
+    moves.reserve(256);
+    generate(position, side, history, [&](Move move) { moves.push_back(move); });
     return moves;
 }
 
@@ -122,10 +125,22 @@ struct Entry {
     Move move;
 };
 
-class Search {
-    std::vector<Entry> table = std::vector<Entry>(1 << 18);
-    std::clock_t deadline;
+struct SearchStats {
     std::uint64_t nodes = 0;
+    int depth = 0, score = 0;
+    double seconds = 0;
+};
+
+class Search {
+    struct Candidate { Move move; int score; };
+    struct Frame {
+        std::array<Candidate, 49 * 24> moves;
+        Move best;
+    };
+    std::vector<Entry> table = std::vector<Entry>(1 << 18);
+    std::vector<Frame> frames;
+    std::clock_t start, deadline;
+    SearchStats statistics;
     bool stopped = false;
     std::vector<PastMove> history;
 
@@ -135,57 +150,83 @@ class Search {
     }
 
     int negamax(Position position, int side, int ply, int depth, int alpha, int beta) {
-        if ((++nodes & 255) == 0 && std::clock() >= deadline) stopped = true;
+        if ((statistics.nodes++ & 255) == 0 && std::clock() >= deadline) stopped = true;
         if (stopped) return 0;
         int end = terminal(position, ply);
         if (end != infinity) return end;
         if (!depth) return evaluate(position);
-        auto moves = generate(position, side, history);
-        if (moves.empty()) return -100049;
         auto& cached = entry(position);
         Move preferred = cached.us == position.us && cached.them == position.them ? cached.move : Move{};
-        struct Candidate { Move move; int score; };
-        std::vector<Candidate> ordered;
-        ordered.reserve(moves.size());
-        for (Move move : moves) {
-            int score = 200 * count(position.them & adjacent[move.to]);
+        auto& frame = frames[depth - 1];
+        std::array<int, 49> captures;
+        captures.fill(-1);
+        int size = 0;
+        generate(position, side, history, [&](Move move) {
+            if (captures[move.to] < 0) captures[move.to] = 200 * count(position.them & adjacent[move.to]);
+            int score = captures[move.to];
             score += (adjacent[move.from] & (Bits{1} << move.to)) ? 100 : 0;
             if (move == preferred) score += infinity;
-            ordered.push_back({move, score});
-        }
-        std::sort(ordered.begin(), ordered.end(), [](Candidate a, Candidate b) { return a.score > b.score; });
+            frame.moves[size++] = {move, score};
+        });
+        if (!size) return -100049;
         int best = -infinity;
-        Move bestMove = ordered.front().move;
-        for (const auto& candidate : ordered) {
-            Move move = candidate.move;
+        Move bestMove;
+        for (int i = 0; i < size; ++i) {
+            auto begin = frame.moves.begin() + i;
+            auto next = std::max_element(begin, frame.moves.begin() + size,
+                [](Candidate a, Candidate b) { return a.score < b.score; });
+            std::iter_swap(begin, next);
+            Move move = begin->move;
             history.push_back({position, move, side});
-            int score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+            int score;
+            if (!i) score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+            else {
+                score = -negamax(position.play(move), -side, ply + 1, depth - 1, -alpha - 1, -alpha);
+                if (!stopped && score > alpha && score < beta)
+                    score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+            }
             history.pop_back();
             if (stopped) return 0;
             if (score > best) { best = score; bestMove = move; }
             alpha = std::max(alpha, score);
             if (alpha >= beta) break;
         }
+        frame.best = bestMove;
         cached = {position.us, position.them, bestMove};
         return best;
     }
 
 public:
     Search(std::clock_t start, double seconds, std::vector<PastMove> past)
-        : deadline(start + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC)), history(std::move(past)) {}
+        : start(start), deadline(start + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC)), history(std::move(past)) {}
+
+    const SearchStats& stats() const { return statistics; }
 
     Move choose(Position position, int side, int ply, int maxDepth = 64) {
+        statistics = {};
+        stopped = false;
+        auto finish = [&](Move move) {
+            statistics.seconds = static_cast<double>(std::clock() - start) / CLOCKS_PER_SEC;
+            return move;
+        };
+        if (terminal(position, ply) != infinity) return finish({});
         auto moves = generate(position, side, history);
-        if (moves.empty()) return {};
+        if (moves.empty()) return finish({});
         Move best = moves.front();
-        if (moves.size() == 1) return best;
+        if (moves.size() == 1) return finish(best);
+        maxDepth = std::min(maxDepth, 400 - ply);
+        frames.resize(maxDepth);
+        history.reserve(history.size() + maxDepth);
         for (int depth = 1; depth <= maxDepth; ++depth) {
+            if (std::clock() >= deadline) break;
             int score = negamax(position, side, ply, depth, -infinity, infinity);
             if (stopped) break;
-            best = entry(position).move;
+            best = frames[depth - 1].best;
+            statistics.depth = depth;
+            statistics.score = score;
             if (std::abs(score) >= 100000 || std::clock() >= deadline) break;
         }
-        return best;
+        return finish(best);
     }
 };
 
