@@ -128,6 +128,7 @@ struct Entry {
 struct SearchStats {
     std::uint64_t nodes = 0;
     int depth = 0, score = 0;
+    int moveDepth = 0, moveScore = 0;
     double seconds = 0;
 };
 
@@ -139,9 +140,12 @@ class Search {
     };
     std::vector<Entry> table = std::vector<Entry>(1 << 18);
     std::vector<Frame> frames;
+    int rootPly = 0;
     std::clock_t start, deadline;
     SearchStats statistics;
     bool stopped = false;
+    Move rootBest;
+    int rootScore = 0;
     std::vector<PastMove> history;
 
     Entry& entry(Position position) {
@@ -157,6 +161,11 @@ class Search {
         if (!depth) return evaluate(position);
         auto& cached = entry(position);
         Move preferred = cached.us == position.us && cached.them == position.them ? cached.move : Move{};
+        if (preferred.from < 0 && depth >= 4) {
+            negamax(position, side, ply, depth - 2, alpha, beta);
+            if (stopped) return 0;
+            preferred = cached.us == position.us && cached.them == position.them ? cached.move : Move{};
+        }
         auto& frame = frames[depth - 1];
         std::array<int, 49> captures;
         captures.fill(-1);
@@ -187,7 +196,11 @@ class Search {
             }
             history.pop_back();
             if (stopped) return 0;
-            if (score > best) { best = score; bestMove = move; }
+            if (score > best) {
+                best = score;
+                bestMove = move;
+                if (ply == rootPly) { rootBest = move; rootScore = score; }
+            }
             alpha = std::max(alpha, score);
             if (alpha >= beta) break;
         }
@@ -204,6 +217,7 @@ public:
 
     Move choose(Position position, int side, int ply, int maxDepth = 64) {
         statistics = {};
+        rootPly = ply;
         stopped = false;
         auto finish = [&](Move move) {
             statistics.seconds = static_cast<double>(std::clock() - start) / CLOCKS_PER_SEC;
@@ -219,7 +233,13 @@ public:
         history.reserve(history.size() + maxDepth);
         for (int depth = 1; depth <= maxDepth; ++depth) {
             if (std::clock() >= deadline) break;
+            rootBest = {};
             int score = negamax(position, side, ply, depth, -infinity, infinity);
+            if (rootBest.from >= 0) {
+                best = rootBest;
+                statistics.moveDepth = depth;
+                statistics.moveScore = rootScore;
+            }
             if (stopped) break;
             best = frames[depth - 1].best;
             statistics.depth = depth;
