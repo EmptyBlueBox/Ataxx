@@ -80,9 +80,8 @@ inline bool isLegal(Position position, Move move, int side, const std::vector<Pa
     Bits target = Bits{1} << move.to;
     if (!(position.us & (Bits{1} << move.from)) || ((position.us | position.them) & target)) return false;
     if (!((adjacent[move.from] | jumps[move.from]) & target)) return false;
-    int occupied = count(position.us | position.them);
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
-        if (count(it->position.us | it->position.them) != occupied) break;
+        if (adjacent[it->move.from] & (Bits{1} << it->move.to)) break;
         if (it->side == side && it->position == position && it->move == move) return false;
     }
     return true;
@@ -113,9 +112,21 @@ inline int terminal(Position position, int ply) {
     return infinity;
 }
 
+inline constexpr int middlePst[49] = {100, 73, 15, 12, 33, 57, 56, 86, 19, 2, 1, 2, 18, 41, 18, 3, 0, 4, 15, 1, 15, 15, 5, 2, 1, 4, 3, 28, 18, 1, 14, 5, 2, 5, 16, 65, 25, 9, 2, 3, 25, 56, 78, 37, 27, 20, 26, 73, 83};
+inline constexpr int latePst[49] = {95, 65, 87, 37, 84, 74, 96, 57, 37, 18, 0, 13, 27, 74, 74, 15, 21, 2, 29, 23, 85, 44, 2, 0, 0, 5, 2, 26, 81, 19, 9, 4, 28, 19, 83, 67, 33, 33, 1, 19, 34, 69, 100, 78, 72, 45, 80, 65, 85};
+inline constexpr auto positionalWeights = [] {
+    std::array<std::array<std::array<int, 2>, 128>, 7> weights{};
+    for (int row = 0; row < 7; ++row)
+        for (int mask = 1; mask < 128; ++mask) {
+            int bit = 0;
+            while (!(mask & (1 << bit))) ++bit;
+            weights[row][mask][0] = weights[row][mask & (mask - 1)][0] + middlePst[row * 7 + bit];
+            weights[row][mask][1] = weights[row][mask & (mask - 1)][1] + latePst[row * 7 + bit];
+        }
+    return weights;
+}();
+
 inline int evaluate(Position position) {
-    constexpr int middlePst[49] = {100, 73, 15, 12, 33, 57, 56, 86, 19, 2, 1, 2, 18, 41, 18, 3, 0, 4, 15, 1, 15, 15, 5, 2, 1, 4, 3, 28, 18, 1, 14, 5, 2, 5, 16, 65, 25, 9, 2, 3, 25, 56, 78, 37, 27, 20, 26, 73, 83};
-    constexpr int latePst[49] = {95, 65, 87, 37, 84, 74, 96, 57, 37, 18, 0, 13, 27, 74, 74, 15, 21, 2, 29, 23, 85, 44, 2, 0, 0, 5, 2, 26, 81, 19, 9, 4, 28, 19, 83, 67, 33, 33, 1, 19, 34, 69, 100, 78, 72, 45, 80, 65, 85};
     constexpr int middleHoles[9] = {-17, 4, -28, -88, -125, -200, -322, -446, -534};
     constexpr int lateHoles[9] = {23, 28, 23, 0, -64, -129, -192, -351, -440};
     Bits empty = boardMask & ~(position.us | position.them);
@@ -128,10 +139,10 @@ inline int evaluate(Position position) {
     for (int side : {1, -1}) {
         Bits own = side == 1 ? position.us : position.them;
         Bits enemy = side == 1 ? position.them : position.us;
-        for (Bits pieces = own; pieces; pieces &= pieces - 1) {
-            int square = first(pieces);
-            middle += side * middlePst[square];
-            late += side * latePst[square];
+        for (int row = 0; row < 7; ++row) {
+            const auto& weights = positionalWeights[row][(own >> (row * 7)) & 127];
+            middle += side * weights[0];
+            late += side * weights[1];
         }
         for (Bits holes = expand(own) & empty & expand(expand(enemy)); holes; holes &= holes - 1) {
             int neighbors = count(own & adjacent[first(holes)]);
@@ -145,9 +156,8 @@ inline int evaluate(Position position) {
 template<class AddMove>
 inline void generate(Position position, int side, const std::vector<PastMove>& history, AddMove add) {
     std::array<Bits, 49> banned{};
-    int occupied = count(position.us | position.them);
     for (auto it = history.rbegin(); it != history.rend(); ++it) {
-        if (count(it->position.us | it->position.them) != occupied) break;
+        if (adjacent[it->move.from] & (Bits{1} << it->move.to)) break;
         if (it->side == side && it->position == position) banned[it->move.from] |= Bits{1} << it->move.to;
     }
     Bits empty = boardMask & ~(position.us | position.them);
@@ -185,8 +195,6 @@ struct SearchStats {
 };
 
 class Search {
-    struct Evaluation { Bits us = 0, them = 0; int score = 0; };
-    std::vector<Evaluation> evaluations = std::vector<Evaluation>(1 << 18);
     struct Candidate { Move move; int score; };
     struct Frame {
         std::array<Candidate, 49 * 24> moves;
@@ -217,24 +225,15 @@ class Search {
         return table[(key ^ (key >> 32)) & (table.size() - 1)];
     }
 
-    int cachedEvaluation(Position position) {
-        Bits key = position.us * 0x9e3779b97f4a7c15ULL ^ position.them * 0xbf58476d1ce4e5b9ULL;
-        auto& cached = evaluations[(key ^ (key >> 32)) & (evaluations.size() - 1)];
-        if (cached.us == position.us && cached.them == position.them) return cached.score;
-        int value = evaluate(position);
-        cached = {position.us, position.them, value};
-        return value;
-    }
-
     int negamax(Position position, int side, int ply, int depth, int alpha, int beta, bool allowNull = true) {
         if ((statistics.nodes++ & 255) == 0 && std::clock() >= deadline) stopped = true;
         if (stopped) return 0;
         int end = terminal(position, ply);
         if (end != infinity) return end;
-        if (!depth) return cachedEvaluation(position);
+        if (!depth) return evaluate(position);
         if (allowNull && depth >= 3 && beta == alpha + 1 && beta < 100000
             && count(boardMask & ~(position.us | position.them)) >= 10
-            && count(position.us) >= 4 && count(position.them) >= 4 && cachedEvaluation(position) >= beta) {
+            && count(position.us) >= 4 && count(position.them) >= 4 && evaluate(position) >= beta) {
             int score = -negamax({position.them, position.us}, -side, ply + 1, depth - 3, -beta, -beta + 1, false);
             if (stopped) return 0;
             if (score >= beta) return score;
@@ -255,16 +254,21 @@ class Search {
             preferred = cached.us == position.us && cached.them == position.them ? cached.move : Move{};
         }
         auto& frame = frames[depth - 1];
-        std::array<int, 49> captures;
-        captures.fill(-1);
         int size = 0;
-        generate(position, side, history, [&](Move move) {
-            if (captures[move.to] < 0) captures[move.to] = 200 * count(position.them & adjacent[move.to]);
-            int score = captures[move.to];
-            score += (adjacent[move.from] & (Bits{1} << move.to)) ? 100 : 0;
-            if (move == preferred) score += infinity;
-            frame.moves[size++] = {move, score};
-        });
+        auto prepare = [&] {
+            std::array<int, 49> captures;
+            captures.fill(-1);
+            generate(position, side, history, [&](Move move) {
+                if (captures[move.to] < 0) captures[move.to] = 200 * count(position.them & adjacent[move.to]);
+                int score = captures[move.to];
+                score += (adjacent[move.from] & (Bits{1} << move.to)) ? 100 : 0;
+                if (move == preferred) score += infinity;
+                frame.moves[size++] = {move, score};
+            });
+        };
+        bool deferred = preferred.from >= 0 && isLegal(position, preferred, side, history);
+        if (deferred) frame.moves[size++] = {preferred, infinity};
+        else prepare();
         if (!size) return -100049;
         int best = -infinity;
         Move bestMove;
@@ -294,9 +298,17 @@ class Search {
             }
             alpha = std::max(alpha, score);
             if (alpha >= beta) break;
+            if (!i && deferred) {
+                size = 0;
+                prepare();
+                auto first = std::find_if(frame.moves.begin(), frame.moves.begin() + size,
+                    [&](Candidate candidate) { return candidate.move == preferred; });
+                std::iter_swap(frame.moves.begin(), first);
+            }
         }
         frame.best = bestMove;
-        cached = {position.us, position.them, bestMove, historyKey, ply, side, depth, best, best <= originalAlpha ? -1 : best >= beta ? 1 : 0};
+        if ((cached.us == position.us && cached.them == position.them) || cached.depth <= depth + 2)
+            cached = {position.us, position.them, bestMove, historyKey, ply, side, depth, best, best <= originalAlpha ? -1 : best >= beta ? 1 : 0};
         return best;
     }
 
