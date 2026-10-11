@@ -55,8 +55,11 @@ inline bool isLegal(Position position, Move move, int side, const std::vector<Pa
     Bits target = Bits{1} << move.to;
     if (!(position.us & (Bits{1} << move.from)) || ((position.us | position.them) & target)) return false;
     if (!((adjacent[move.from] | jumps[move.from]) & target)) return false;
-    for (const auto& past : history)
-        if (past.side == side && past.position == position && past.move == move) return false;
+    int occupied = count(position.us | position.them);
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (count(it->position.us | it->position.them) != occupied) break;
+        if (it->side == side && it->position == position && it->move == move) return false;
+    }
     return true;
 }
 
@@ -92,14 +95,29 @@ inline int evaluate(Position position) {
     int material = count(position.us) - count(position.them);
     int mobility = count(ownReach) - count(opponentReach);
     int exposed = count(position.them & expand(ownReach)) - count(position.us & expand(opponentReach));
-    return material * 100 + mobility * 12 + exposed * 8;
+    int concentrated = 0;
+    for (Bits cells = ownReach | opponentReach; cells; cells &= cells - 1) {
+        int cell = first(cells);
+        if (ownReach & (Bits{1} << cell)) {
+            int n = count(position.them & adjacent[cell]);
+            concentrated += n * (n - 1);
+        }
+        if (opponentReach & (Bits{1} << cell)) {
+            int n = count(position.us & adjacent[cell]);
+            concentrated -= n * (n - 1);
+        }
+    }
+    return material * 100 + mobility * 12 + exposed * 8 + concentrated * 8;
 }
 
 template<class AddMove>
 inline void generate(Position position, int side, const std::vector<PastMove>& history, AddMove add) {
     std::array<Bits, 49> banned{};
-    for (const auto& past : history)
-        if (past.side == side && past.position == position) banned[past.move.from] |= Bits{1} << past.move.to;
+    int occupied = count(position.us | position.them);
+    for (auto it = history.rbegin(); it != history.rend(); ++it) {
+        if (count(it->position.us | it->position.them) != occupied) break;
+        if (it->side == side && it->position == position) banned[it->move.from] |= Bits{1} << it->move.to;
+    }
     Bits empty = boardMask & ~(position.us | position.them);
     Bits clones = 0;
     for (Bits pieces = position.us; pieces; pieces &= pieces - 1) {
