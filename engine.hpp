@@ -11,6 +11,31 @@
 
 namespace ataxx {
 
+inline constexpr char evaluationNotice[] = R"NOTICE(Evaluation adapted from Autaxx by kz04px.
+MIT License
+
+Copyright (c) 2019 kz04px
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+)NOTICE";
+
+
 using Bits = std::uint64_t;
 constexpr Bits boardMask = (Bits{1} << 49) - 1;
 constexpr int infinity = 1000000;
@@ -89,25 +114,32 @@ inline int terminal(Position position, int ply) {
 }
 
 inline int evaluate(Position position) {
+    constexpr int middlePst[49] = {100, 73, 15, 12, 33, 57, 56, 86, 19, 2, 1, 2, 18, 41, 18, 3, 0, 4, 15, 1, 15, 15, 5, 2, 1, 4, 3, 28, 18, 1, 14, 5, 2, 5, 16, 65, 25, 9, 2, 3, 25, 56, 78, 37, 27, 20, 26, 73, 83};
+    constexpr int latePst[49] = {95, 65, 87, 37, 84, 74, 96, 57, 37, 18, 0, 13, 27, 74, 74, 15, 21, 2, 29, 23, 85, 44, 2, 0, 0, 5, 2, 26, 81, 19, 9, 4, 28, 19, 83, 67, 33, 33, 1, 19, 34, 69, 100, 78, 72, 45, 80, 65, 85};
+    constexpr int middleHoles[9] = {-17, 4, -28, -88, -125, -200, -322, -446, -534};
+    constexpr int lateHoles[9] = {23, 28, 23, 0, -64, -129, -192, -351, -440};
     Bits empty = boardMask & ~(position.us | position.them);
-    Bits ownReach = expand(expand(position.us)) & empty;
-    Bits opponentReach = expand(expand(position.them)) & empty;
+    int phase = count(position.us | position.them);
     int material = count(position.us) - count(position.them);
-    int mobility = count(ownReach) - count(opponentReach);
-    int exposed = count(position.them & expand(ownReach)) - count(position.us & expand(opponentReach));
-    int concentrated = 0;
-    for (Bits cells = ownReach | opponentReach; cells; cells &= cells - 1) {
-        int cell = first(cells);
-        if (ownReach & (Bits{1} << cell)) {
-            int n = count(position.them & adjacent[cell]);
-            concentrated += n * (n - 1);
+    int middle = material * 100 + 243, late = material * 79 + 394;
+    int safe = count(position.us & ~expand(empty)) - count(position.them & ~expand(empty));
+    middle += safe * 149;
+    late += safe * 27;
+    for (int side : {1, -1}) {
+        Bits own = side == 1 ? position.us : position.them;
+        Bits enemy = side == 1 ? position.them : position.us;
+        for (Bits pieces = own; pieces; pieces &= pieces - 1) {
+            int square = first(pieces);
+            middle += side * middlePst[square];
+            late += side * latePst[square];
         }
-        if (opponentReach & (Bits{1} << cell)) {
-            int n = count(position.us & adjacent[cell]);
-            concentrated -= n * (n - 1);
+        for (Bits holes = expand(own) & empty & expand(expand(enemy)); holes; holes &= holes - 1) {
+            int neighbors = count(own & adjacent[first(holes)]);
+            middle += side * middleHoles[neighbors];
+            late += side * lateHoles[neighbors];
         }
     }
-    return material * 100 + mobility * 12 + exposed * 8 + concentrated * 8;
+    return (middle * (49 - phase) + late * phase) / 49;
 }
 
 template<class AddMove>
@@ -141,6 +173,8 @@ inline std::vector<Move> generate(Position position, int side, const std::vector
 struct Entry {
     Bits us = 0, them = 0;
     Move move;
+    std::uint64_t historyKey = 0;
+    int ply = 0, side = 0, depth = -1, score = 0, bound = 0;
 };
 
 struct SearchStats {
@@ -151,6 +185,8 @@ struct SearchStats {
 };
 
 class Search {
+    struct Evaluation { Bits us = 0, them = 0; int score = 0; };
+    std::vector<Evaluation> evaluations = std::vector<Evaluation>(1 << 18);
     struct Candidate { Move move; int score; };
     struct Frame {
         std::array<Candidate, 49 * 24> moves;
@@ -165,19 +201,53 @@ class Search {
     Move rootBest;
     int rootScore = 0;
     std::vector<PastMove> history;
+    std::uint64_t historyKey = 0;
+
+    static std::uint64_t signature(const PastMove& past) {
+        Bits key = past.position.us * 0x9e3779b97f4a7c15ULL ^ past.position.them * 0xbf58476d1ce4e5b9ULL;
+        key ^= (past.move.from * 49 + past.move.to) * 0x94d049bb133111ebULL;
+        key ^= past.side == 1 ? 0xd6e8feb86659fd93ULL : 0xa5a3564e27f8862bULL;
+        key = (key ^ (key >> 30)) * 0xbf58476d1ce4e5b9ULL;
+        key = (key ^ (key >> 27)) * 0x94d049bb133111ebULL;
+        return key ^ (key >> 31);
+    }
 
     Entry& entry(Position position) {
         Bits key = position.us * 0x9e3779b97f4a7c15ULL ^ position.them * 0xbf58476d1ce4e5b9ULL;
         return table[(key ^ (key >> 32)) & (table.size() - 1)];
     }
 
-    int negamax(Position position, int side, int ply, int depth, int alpha, int beta) {
+    int cachedEvaluation(Position position) {
+        Bits key = position.us * 0x9e3779b97f4a7c15ULL ^ position.them * 0xbf58476d1ce4e5b9ULL;
+        auto& cached = evaluations[(key ^ (key >> 32)) & (evaluations.size() - 1)];
+        if (cached.us == position.us && cached.them == position.them) return cached.score;
+        int value = evaluate(position);
+        cached = {position.us, position.them, value};
+        return value;
+    }
+
+    int negamax(Position position, int side, int ply, int depth, int alpha, int beta, bool allowNull = true) {
         if ((statistics.nodes++ & 255) == 0 && std::clock() >= deadline) stopped = true;
         if (stopped) return 0;
         int end = terminal(position, ply);
         if (end != infinity) return end;
-        if (!depth) return evaluate(position);
+        if (!depth) return cachedEvaluation(position);
+        if (allowNull && depth >= 3 && beta == alpha + 1 && beta < 100000
+            && count(boardMask & ~(position.us | position.them)) >= 10
+            && count(position.us) >= 4 && count(position.them) >= 4 && cachedEvaluation(position) >= beta) {
+            int score = -negamax({position.them, position.us}, -side, ply + 1, depth - 3, -beta, -beta + 1, false);
+            if (stopped) return 0;
+            if (score >= beta) return score;
+        }
+        int originalAlpha = alpha;
         auto& cached = entry(position);
+        if (cached.us == position.us && cached.them == position.them && cached.historyKey == historyKey
+            && cached.ply == ply && cached.side == side && cached.depth >= depth
+            && (!cached.bound || (cached.bound > 0 && cached.score >= beta) || (cached.bound < 0 && cached.score <= alpha))) {
+            frames[depth - 1].best = cached.move;
+            if (ply == rootPly) { rootBest = cached.move; rootScore = cached.score; }
+            return cached.score;
+        }
         Move preferred = cached.us == position.us && cached.them == position.them ? cached.move : Move{};
         if (preferred.from < 0 && depth >= 4) {
             negamax(position, side, ply, depth - 2, alpha, beta);
@@ -205,6 +275,8 @@ class Search {
             std::iter_swap(begin, next);
             Move move = begin->move;
             history.push_back({position, move, side});
+            Bits oldHistoryKey = historyKey;
+            historyKey = (adjacent[move.from] & (Bits{1} << move.to)) ? 0 : historyKey ^ signature(history.back());
             int score;
             if (!i) score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
             else {
@@ -213,6 +285,7 @@ class Search {
                     score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
             }
             history.pop_back();
+            historyKey = oldHistoryKey;
             if (stopped) return 0;
             if (score > best) {
                 best = score;
@@ -223,13 +296,16 @@ class Search {
             if (alpha >= beta) break;
         }
         frame.best = bestMove;
-        cached = {position.us, position.them, bestMove};
+        cached = {position.us, position.them, bestMove, historyKey, ply, side, depth, best, best <= originalAlpha ? -1 : best >= beta ? 1 : 0};
         return best;
     }
 
 public:
     Search(std::clock_t start, double seconds, std::vector<PastMove> past)
-        : start(start), deadline(start + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC)), history(std::move(past)) {}
+        : start(start), deadline(start + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC)), history(std::move(past)) {
+        for (const auto& h : history)
+            historyKey = (adjacent[h.move.from] & (Bits{1} << h.move.to)) ? 0 : historyKey ^ signature(h);
+    }
 
     const SearchStats& stats() const { return statistics; }
 

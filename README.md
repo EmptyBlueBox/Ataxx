@@ -21,3 +21,5 @@ cmake --build build-bot --target bot submission -j
 ```
 
 Submit `build-bot/botzone.cpp` to Botzone as C++17 with simple interaction enabled.
+
+Evaluation parameters are adapted from [Autaxx](https://github.com/kz04px/autaxx) under the MIT license.
