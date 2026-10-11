@@ -41,7 +41,16 @@ constexpr Bits boardMask = (Bits{1} << 49) - 1;
 constexpr int infinity = 1000000;
 inline std::array<Bits, 49> adjacent{}, jumps{};
 
-inline int count(Bits bits) { return __builtin_popcountll(bits); }
+inline int count(Bits bits) {
+#if defined(__POPCNT__) || defined(__aarch64__)
+    return __builtin_popcountll(bits);
+#else
+    bits -= (bits >> 1) & 0x5555555555555555ULL;
+    bits = (bits & 0x3333333333333333ULL) + ((bits >> 2) & 0x3333333333333333ULL);
+    bits = (bits + (bits >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
+    return static_cast<int>((bits * 0x0101010101010101ULL) >> 56);
+#endif
+}
 inline int first(Bits bits) { return __builtin_ctzll(bits); }
 
 inline void initialize() {
@@ -278,18 +287,21 @@ class Search {
                 [](Candidate a, Candidate b) { return a.score < b.score; });
             std::iter_swap(begin, next);
             Move move = begin->move;
-            history.push_back({position, move, side});
-            Bits oldHistoryKey = historyKey;
-            historyKey = (adjacent[move.from] & (Bits{1} << move.to)) ? 0 : historyKey ^ signature(history.back());
             int score;
-            if (!i) score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+            if (depth == 1) score = -negamax(position.play(move), -side, ply + 1, 0, -beta, -alpha);
             else {
-                score = -negamax(position.play(move), -side, ply + 1, depth - 1, -alpha - 1, -alpha);
-                if (!stopped && score > alpha && score < beta)
-                    score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+                history.push_back({position, move, side});
+                Bits oldHistoryKey = historyKey;
+                historyKey = (adjacent[move.from] & (Bits{1} << move.to)) ? 0 : historyKey ^ signature(history.back());
+                if (!i) score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+                else {
+                    score = -negamax(position.play(move), -side, ply + 1, depth - 1, -alpha - 1, -alpha);
+                    if (!stopped && score > alpha && score < beta)
+                        score = -negamax(position.play(move), -side, ply + 1, depth - 1, -beta, -alpha);
+                }
+                history.pop_back();
+                historyKey = oldHistoryKey;
             }
-            history.pop_back();
-            historyKey = oldHistoryKey;
             if (stopped) return 0;
             if (score > best) {
                 best = score;
