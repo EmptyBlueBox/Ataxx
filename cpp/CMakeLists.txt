@@ -8,6 +8,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+include_directories(../python/src)
 add_executable(bot bot.cpp)
 target_compile_options(bot PRIVATE -Wall -Wextra -Wpedantic)
 
@@ -15,7 +16,7 @@ add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp"
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Submission.cmake
-    DEPENDS engine.hpp bot_io.hpp bot.cpp cmake/Submission.cmake
+    DEPENDS ../python/src/board.h weights.h engine.hpp bot.cpp cmake/Submission.cmake
     VERBATIM
 )
 add_custom_target(submission DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp")

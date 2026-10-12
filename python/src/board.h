@@ -4,6 +4,9 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#ifdef __x86_64__
+#pragma GCC target("popcnt")
+#endif
 
 namespace ataxx {
 

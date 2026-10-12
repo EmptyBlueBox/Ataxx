@@ -1,6 +1,7 @@
 #pragma once
 #include <cmath>
 #include <random>
+#include <unordered_map>
 #include "board.h"
 
 namespace ataxx {
@@ -31,6 +32,8 @@ struct Search {
   float gumbel[NMOVES];
   int gSims = 0, gPer = 0, gRound = 0, gNext = 0, gPhases = 0;
   bool gActive = false, gDone = false;
+  size_t cacheLimit = 0;
+  std::unordered_map<u64, std::vector<float>> cache;
   float cpuct = 1.0f, cpuctLog = 0.45f, fpu = 0.2f, scoreWeight = 0.0f, scoreScale = 5.0f;
 
   void reset(const Pos& p, const History& h) {
@@ -38,6 +41,7 @@ struct Search {
     hist = h;
     nodes.assign(1, Node{});
     edges.clear();
+    cache.clear();
     gActive = false;
   }
 
@@ -192,6 +196,15 @@ struct Search {
       }
       if (!nodes[ni].expanded) {
         leaf = p;
+        auto hit = cache.find(cacheKey(p));
+        if (hit != cache.end()) {
+          Move mv[NMOVES];
+          float policy[NMOVES];
+          int n = genGeometric(p, mv);
+          for (int j = 0; j < n; j++) policy[mv[j]] = hit->second[4 + j];
+          expand(policy, hit->second.data());
+          return false;
+        }
         encode(p, feat);
         return true;
       }
@@ -210,8 +223,22 @@ struct Search {
     }
   }
 
+  static u64 cacheKey(const Pos& p) { return mix(mix(p.bb[0], p.bb[1]), p.side * 512 + p.ply); }
+
   void feed(const float* policy, const float* value) {
     evals++;
+    if (cacheLimit) {
+      if (cache.size() >= cacheLimit) cache.clear();
+      Move mv[NMOVES];
+      int n = genGeometric(leaf, mv);
+      std::vector<float>& c = cache[cacheKey(leaf)];
+      c.assign(value, value + 4);
+      for (int j = 0; j < n; j++) c.push_back(policy[mv[j]]);
+    }
+    expand(policy, value);
+  }
+
+  void expand(const float* policy, const float* value) {
     Move mv[NMOVES];
     int n = genLegal(leaf, hist, mv);
     uint32_t ni = path.back();

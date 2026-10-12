@@ -17,9 +17,9 @@ players = {}
 
 
 class Engine:
-    def __init__(self, net, evals, first, seed, explore=0, share=1, symmetric=0, book=None):
-        self.evals, self.first_evals = int(evals), int(first)
-        self.proc = subprocess.Popen([ROOT / "build/engine", net], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    def __init__(self, binary, net, budget, seed, explore=0, share=1, symmetric=0, book=None):
+        self.unit, self.budget = ("time", float(budget[:-1])) if budget.endswith("s") else ("evals", int(budget))
+        self.proc = subprocess.Popen([binary, net], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.send(f"explore {explore} {share} {seed} {symmetric}")
         if book:
             self.send(f"book {book}")
@@ -40,7 +40,7 @@ class Engine:
         self.send("play %d %d %d %d" % move)
 
     def genmove(self, legal):
-        self.send(f"go evals {self.first_evals if self.first else self.evals}")
+        self.send(f"go {self.unit} {(3 if self.first else 1) * self.budget}")
         self.first = False
         return tuple(map(int, self.proc.stdout.readline().split()[:4]))
 
@@ -72,8 +72,10 @@ class Bot:
         self.proc.stdin.flush()
         move = tuple(map(int, self.proc.stdout.readline().split()))
         self.info = self.proc.stdout.readline().strip()
-        if self.proc.stdout.readline().strip() != ">>>BOTZONE_REQUEST_KEEP_RUNNING<<<":
-            self.close()
+        for line in iter(self.proc.stdout.readline, ">>>BOTZONE_REQUEST_KEEP_RUNNING<<<\n"):
+            if not line:
+                self.close()
+                break
         if max(abs(move[0] - move[2]), abs(move[1] - move[3])) == 1:
             move = next(m for m in legal if m[2:] == move[2:] and max(abs(m[0] - m[2]), abs(m[1] - m[3])) == 1)
         self.moves.append(move)
@@ -96,8 +98,8 @@ class Uniform:
 
 def make(spec, seed):
     kind, *rest = spec.split(":")
-    if kind == "engine":
-        return Engine(rest[0], rest[1], 3 * int(rest[1]), seed, *rest[2:])
+    if kind.startswith("engine"):
+        return Engine(kind[7:] or ROOT / "build/engine", rest[0], rest[1], seed, *rest[2:])
     return {"uniform": Uniform, "bot": Bot}[kind](*rest)
 
 

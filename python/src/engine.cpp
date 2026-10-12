@@ -31,7 +31,10 @@ struct Engine {
 
   std::map<std::string, std::array<int, 4>> book;
 
-  explicit Engine(const char* path) : net(path) { reset(); }
+  explicit Engine(const char* path) : net(path) {
+    s.cacheLimit = 200000;
+    reset();
+  }
 
   void load(const char* path) {
     std::ifstream in(path);

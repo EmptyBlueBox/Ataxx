@@ -42,16 +42,15 @@ void drawBoard(const ataxx::Session& session, bool interactive) {
             Color fill = (row + column) % 2 ? Color{37, 54, 61, 255} : Color{44, 63, 69, 255};
             if (interactive && CheckCollisionPointRec(GetMousePosition(), cell)) fill = Color{54, 76, 80, 255};
             DrawRectangleRounded(cell, 0.12f, 4, fill);
-            int side = (game.position.us & (ataxx::Bits{1} << square)) ? game.side()
-                : (game.position.them & (ataxx::Bits{1} << square)) ? -game.side() : 0;
+            int bit = ataxx::bitOfSq(square), side = game.pos.bb[0] >> bit & 1 ? 1 : game.pos.bb[1] >> bit & 1 ? 2 : 0;
             Vector2 center{x + 40, y + 40};
             if (side) {
                 DrawCircleV({center.x, center.y + 3}, 26, Fade(BLACK, 0.2f));
                 DrawCircleV(center, 26, side == 1 ? red : yellow);
                 DrawCircleV({center.x - 7, center.y - 8}, 5, Fade(WHITE, 0.18f));
                 if (square == session.selected) DrawRing(center, 30, 33, 0, 360, 40, ink);
-            } else if (interactive && session.selected >= 0 && game.legal({session.selected, square})) {
-                if (ataxx::adjacent[session.selected] & (ataxx::Bits{1} << square)) DrawCircleV(center, 6, accent);
+            } else if (interactive && session.selected >= 0 && game.legal(session.selected, square)) {
+                if (ataxx::T().ring1[session.selected] >> bit & 1) DrawCircleV(center, 6, accent);
                 else DrawRing(center, 6, 8, 0, 360, 24, accent);
             }
         }
@@ -71,16 +70,16 @@ void scoreCard(Rectangle bounds, const char* name, int score, Color color, bool 
 }
 
 int main() {
-    ataxx::initialize();
     SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_MSAA_4X_HINT);
     InitWindow(720, 900, "Ataxx");
     SetExitKey(KEY_NULL);
     SetTargetFPS(60);
 
     ataxx::Session session;
+    ataxx::Search search;
     std::future<ataxx::Move> pending;
     bool menu = true, hasGame = false, singlePlayer = true;
-    int humanSide = 1;
+    int humanSide = 0;
     std::string message;
 
     auto load = [&] {
@@ -101,21 +100,20 @@ int main() {
             session.play(pending.get());
             message.clear();
         }
-        int end = session.game.outcome();
-        if (!menu && !pending.valid() && end == ataxx::infinity && !session.humanTurn()) {
-            pending = std::async(std::launch::async, [game = session.game] {
-                ataxx::Search search(std::clock(), 0.85, game.history);
-                return search.choose(game.position, game.side(), game.ply());
+        int end = session.game.winner();
+        if (!menu && !pending.valid() && end == 2 && !session.humanTurn()) {
+            pending = std::async(std::launch::async, [&search, game = session.game] {
+                return search.choose(game, std::clock(), 0.85);
             });
         }
         bool busy = pending.valid();
-        bool interactive = !menu && !busy && end == ataxx::infinity && session.humanTurn();
+        bool interactive = !menu && !busy && end == 2 && session.humanTurn();
         if (interactive && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             Vector2 mouse = GetMousePosition();
             int square = board.square(mouse.x, mouse.y);
             if (square >= 0) { session.click(square); message.clear(); }
-            end = session.game.outcome();
-            interactive = end == ataxx::infinity && session.humanTurn();
+            end = session.game.winner();
+            interactive = end == 2 && session.humanTurn();
         }
 
         BeginDrawing();
@@ -131,8 +129,8 @@ int main() {
             if (button({80, 393, 560, 62}, "Two players", true, !singlePlayer)) singlePlayer = false;
             DrawText(singlePlayer ? "PLAY AS" : "RED MOVES FIRST", 80, 500, 16, muted);
             if (singlePlayer) {
-                if (button({80, 536, 272, 54}, "Red / first", true, humanSide == 1)) humanSide = 1;
-                if (button({368, 536, 272, 54}, "Yellow / second", true, humanSide == -1)) humanSide = -1;
+                if (button({80, 536, 272, 54}, "Red / first", true, humanSide == 0)) humanSide = 0;
+                if (button({368, 536, 272, 54}, "Yellow / second", true, humanSide == 1)) humanSide = 1;
             }
             if (button({80, 638, 560, 62}, "Start game", true, true)) {
                 session = {};
@@ -148,16 +146,14 @@ int main() {
         } else {
             if (button({520, 40, 120, 44}, "Menu", !busy)) { menu = true; session.selected = -1; message.clear(); }
             const auto& game = session.game;
-            ataxx::Bits redPieces = game.side() == 1 ? game.position.us : game.position.them;
-            ataxx::Bits yellowPieces = game.side() == -1 ? game.position.us : game.position.them;
-            scoreCard({80, 115, 272, 58}, "RED", ataxx::count(redPieces), red, end == ataxx::infinity && game.side() == 1);
-            scoreCard({368, 115, 272, 58}, "YELLOW", ataxx::count(yellowPieces), yellow, end == ataxx::infinity && game.side() == -1);
+            scoreCard({80, 115, 272, 58}, "RED", ataxx::popcnt(game.pos.bb[0]), red, end == 2 && game.pos.side == 0);
+            scoreCard({368, 115, 272, 58}, "YELLOW", ataxx::popcnt(game.pos.bb[1]), yellow, end == 2 && game.pos.side == 1);
             std::string status;
-            if (end != ataxx::infinity) status = end == 0 ? "Draw" : end * game.side() > 0 ? "Red wins" : "Yellow wins";
+            if (end != 2) status = end < 0 ? "Draw" : end == 0 ? "Red wins" : "Yellow wins";
             else if (busy || !session.humanTurn()) status = "AI is thinking...";
-            else status = std::string(game.side() == 1 ? "Red" : "Yellow") + (session.selected < 0 ? ": choose a piece" : ": choose a destination");
-            DrawText(status.c_str(), 80, 182, 18, end == ataxx::infinity ? muted : accent);
-            std::string moves = "Moves: " + std::to_string(game.ply());
+            else status = std::string(game.pos.side == 0 ? "Red" : "Yellow") + (session.selected < 0 ? ": choose a piece" : ": choose a destination");
+            DrawText(status.c_str(), 80, 182, 18, end == 2 ? muted : accent);
+            std::string moves = "Moves: " + std::to_string(game.pos.ply);
             DrawText(moves.c_str(), 640 - MeasureText(moves.c_str(), 16), 184, 16, muted);
             drawBoard(session, interactive);
             float width = session.singlePlayer ? 176 : 272;
