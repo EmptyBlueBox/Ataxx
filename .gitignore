@@ -5,3 +5,5 @@
 **/ataxx.save
 /python/run/
 /python/out/
+.vscode
+pwd.txt

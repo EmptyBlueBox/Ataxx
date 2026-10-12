@@ -45,6 +45,41 @@ class Engine:
         return tuple(map(int, self.proc.stdout.readline().split()[:4]))
 
 
+class Bot:
+    def __init__(self, path, scale=1):
+        self.args, self.proc = [path, str(scale)], None
+
+    def close(self):
+        if self.proc:
+            self.proc.kill()
+            self.proc.wait()
+        self.proc = None
+
+    def reset(self):
+        self.close()
+        self.moves = []
+
+    def play(self, move):
+        self.moves.append(move)
+
+    def genmove(self, legal):
+        if self.proc:
+            self.proc.stdin.write("%d %d %d %d\n" % self.moves[-1])
+        else:
+            self.proc = subprocess.Popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            lines = ["-1 -1 -1 -1"] * (len(self.moves) % 2 == 0) + ["%d %d %d %d" % m for m in self.moves]
+            self.proc.stdin.write("\n".join([str((len(lines) + 1) // 2), *lines]) + "\n")
+        self.proc.stdin.flush()
+        move = tuple(map(int, self.proc.stdout.readline().split()))
+        self.info = self.proc.stdout.readline().strip()
+        if self.proc.stdout.readline().strip() != ">>>BOTZONE_REQUEST_KEEP_RUNNING<<<":
+            self.close()
+        if max(abs(move[0] - move[2]), abs(move[1] - move[3])) == 1:
+            move = next(m for m in legal if m[2:] == move[2:] and max(abs(m[0] - m[2]), abs(m[1] - m[3])) == 1)
+        self.moves.append(move)
+        return move
+
+
 class Uniform:
     def close(self):
         pass
@@ -63,7 +98,7 @@ def make(spec, seed):
     kind, *rest = spec.split(":")
     if kind == "engine":
         return Engine(rest[0], rest[1], 3 * int(rest[1]), seed, *rest[2:])
-    return {"uniform": Uniform}[kind]()
+    return {"uniform": Uniform, "bot": Bot}[kind](*rest)
 
 
 def position(lib, moves):
