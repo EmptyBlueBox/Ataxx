@@ -135,6 +135,24 @@ inline constexpr auto positionalWeights = [] {
     return weights;
 }();
 
+inline std::array<Bits, 4> neighborBits(Bits own) {
+    constexpr Bits left = 0x40810204081ULL;
+    Bits west = (own & ~left) >> 1, east = (own & ~(left << 6)) << 1;
+    auto add = [](Bits a, Bits b, Bits c, Bits& low, Bits& high) {
+        Bits pair = a ^ b;
+        low = pair ^ c;
+        high = (a & b) | (pair & c);
+    };
+    Bits s0, c0, s1, c1, s2, c2, s3, c3;
+    add(west, east, own << 7, s0, c0);
+    add(own >> 7, west << 7, west >> 7, s1, c1);
+    add(s0, s1, east << 7, s2, c2);
+    Bits one = s2 ^ (east >> 7), carry = s2 & (east >> 7);
+    add(c0, c1, c2, s3, c3);
+    Bits two = s3 ^ carry, next = s3 & carry;
+    return {one, two, c3 ^ next, c3 & next};
+}
+
 inline int evaluate(Position position) {
     constexpr int middleHoles[9] = {-17, 4, -28, -88, -125, -200, -322, -446, -534};
     constexpr int lateHoles[9] = {23, 28, 23, 0, -64, -129, -192, -351, -440};
@@ -153,11 +171,25 @@ inline int evaluate(Position position) {
             middle += side * weights[0];
             late += side * weights[1];
         }
-        for (Bits holes = expand(own) & empty & expand(expand(enemy)); holes; holes &= holes - 1) {
-            int neighbors = count(own & adjacent[first(holes)]);
-            middle += side * middleHoles[neighbors];
-            late += side * lateHoles[neighbors];
-        }
+        Bits holes = expand(own) & empty & expand(expand(enemy));
+        auto bits = neighborBits(own);
+        Bits low0 = ~bits[0] & ~bits[1], low1 = bits[0] & ~bits[1];
+        Bits low2 = ~bits[0] & bits[1], low3 = bits[0] & bits[1];
+        auto add = [&](Bits mask, int neighbors) {
+            if (mask) {
+                int cells = side * count(mask);
+                middle += cells * middleHoles[neighbors];
+                late += cells * lateHoles[neighbors];
+            }
+        };
+        add(holes & low1 & ~bits[2], 1);
+        add(holes & low2 & ~bits[2], 2);
+        add(holes & low3 & ~bits[2], 3);
+        add(holes & low0 & bits[2], 4);
+        add(holes & low1 & bits[2], 5);
+        add(holes & low2 & bits[2], 6);
+        add(holes & low3 & bits[2], 7);
+        add(holes & bits[3], 8);
     }
     return (middle * (49 - phase) + late * phase) / 49;
 }
