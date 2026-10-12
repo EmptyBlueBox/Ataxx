@@ -1,6 +1,0 @@
-file(READ "${SOURCE_DIR}/engine.hpp" engine)
-file(READ "${SOURCE_DIR}/bot_io.hpp" io)
-file(READ "${SOURCE_DIR}/bot.cpp" main)
-string(REPLACE "#include \"engine.hpp\"\n" "" io "${io}")
-string(REPLACE "#include \"bot_io.hpp\"\n" "" main "${main}")
-file(WRITE "${OUTPUT}" "${engine}\n${io}\n${main}")
