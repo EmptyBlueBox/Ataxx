@@ -1,25 +1,35 @@
 # Ataxx
 
-Build and play (CMake, C++17):
+## C++
+
+C++17 and CMake 3.24+.
 
 ```sh
+cd cpp
 cmake -S . -B build
 cmake --build build -j
 ./build/ataxx
 ```
 
-Use Clang on macOS or MinGW on Windows. The desktop build downloads raylib 6.0.
+Botzone: submit `build/botzone.cpp` after `cmake --build build --target submission`.
+Evaluation parameters: [Autaxx](https://github.com/kz04px/autaxx), MIT.
 
-Click a piece, then a highlighted square. Single-player Undo returns to your previous turn.
-Save and Load use `ataxx.save` in the working directory. Old `info.txt` saves are unsupported.
+## Python
 
-Build without the desktop dependency:
+Linux x86-64; NVIDIA CUDA for training and self-play.
 
 ```sh
-cmake -S . -B build-bot -DATAXX_DESKTOP=OFF
-cmake --build build-bot --target bot submission -j
+cd python
+make -j
+uv run -m ataxx
 ```
 
-Submit `build-bot/botzone.cpp` to Botzone as C++17 with simple interaction enabled.
+The bot reads Botzone JSON from stdin and writes moves to stdout.
 
-Evaluation parameters are adapted from [Autaxx](https://github.com/kz04px/autaxx) under the MIT license.
+Run training and self-play in separate terminals.
+
+```sh
+uv run -m ataxx.train --net weights/champion.pt --data run/data --out run/nets
+uv run -m ataxx.selfplay --net run/nets/latest.pt --out run/data
+uv run -m ataxx.botzone out
+```

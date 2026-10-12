@@ -1,3 +1,7 @@
-/bot
-/build*/
-/ataxx.save
+**/build*/
+**/.venv/
+**/.deps/
+**/__pycache__/
+**/ataxx.save
+/python/run/
+/python/out/
