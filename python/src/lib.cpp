@@ -119,7 +119,7 @@ struct Driver {
     int j = sample(g);
     if (g.full) {
       const Node& r = g.s.nodes[0];
-      g.rows.back().q = std::max(-32767.f, std::min(32767.f, 32767 * g.s.q(r, g.s.edges[r.edge + j], r.sum / r.visits)));
+      g.rows.back().q = std::max(-32767.f, std::min(32767.f, 32767 * (r.proven ? r.pv : r.sum / r.visits)));
     }
     g.s.advance(g.s.edges[g.s.nodes[0].edge + j].move);
     Outcome o;

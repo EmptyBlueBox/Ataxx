@@ -108,8 +108,12 @@ struct Search {
 
   float sigma(const Node& r, float value) const {
     uint32_t top = 0;
-    for (int j = 0; j < r.n; j++) top = std::max(top, childVisits(j));
-    return (50.f + top) * 0.1f * (value + 1) / 2;
+    float base = r.sum / r.visits, lo = 1e9f, hi = -1e9f;
+    for (int j = 0; j < r.n; j++) {
+      float v = q(r, edges[r.edge + j], base);
+      top = std::max(top, childVisits(j)), lo = std::min(lo, v), hi = std::max(hi, v);
+    }
+    return (50.f + top) * 0.1f * (hi > lo ? (value - lo) / (hi - lo) : 0.5f);
   }
 
   float completed(const Node& r, int j) const {
