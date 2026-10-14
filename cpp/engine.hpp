@@ -131,12 +131,12 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     score += w.linear[phase][3] * (popcnt(frontier & own) - popcnt(frontier & opp));
     return score / 2;
 }
-struct Entry {
+struct alignas(32) Entry {
     u64 own = 0, opp = 0, context = 0;
-    std::int32_t score = 0;
+    std::int32_t score : 21, bound : 2;
+    std::uint32_t age : 8;
     Move move = NMOVES;
-    std::int8_t depth = -1, bound = 0;
-    std::uint8_t age = 0;
+    std::int8_t depth = -1;
 };
 
 struct EvalEntry {
@@ -323,8 +323,8 @@ struct SearchCore {
             }
         }
         if (excluded == NMOVES && !synthetic && (hit || cached.age != age || cached.depth <= depth + 2))
-            cached = {own, opp, context, best, bestMove, static_cast<std::int8_t>(exact ? depth : 0),
-                static_cast<std::int8_t>(best <= originalAlpha ? -1 : best >= beta ? 1 : 0), age};
+            cached = {own, opp, context, best, best <= originalAlpha ? -1 : best >= beta ? 1 : 0, age,
+                bestMove, static_cast<std::int8_t>(exact ? depth : 0)};
         return best;
     }
     ATAXX_HD void init() {
