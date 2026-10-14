@@ -60,7 +60,30 @@ def main():
     del parts
     rng.shuffle(rows)
     split = len(rows) * 19 // 20
-    canonical = torch.tensor(np.unique(indices()[0], return_inverse=True)[1], device="cuda").long()
+    local_canonical = np.unique(indices()[0], return_inverse=True)[1]
+    digits = np.arange(19683)[:, None] // (3 ** np.arange(9)) % 3
+    joint = np.full((49, 19683), 49 * 19683, dtype=np.int32)
+    for t in range(8):
+        x, y = np.arange(9) % 3, np.arange(9) // 3
+        if t & 1: x = 2 - x
+        if t & 2: y = 2 - y
+        if t & 4: x, y = y, x
+        transformed = digits @ (3 ** (3 * y + x))
+        x, y = np.arange(49) % 7, np.arange(49) // 7
+        if t & 1: x = 6 - x
+        if t & 2: y = 6 - y
+        if t & 4: x, y = y, x
+        joint = np.minimum(joint, (7 * y + x)[:, None] * 19683 + transformed)
+    cx, cy = np.arange(49) % 7, np.arange(49) // 7
+    xx = cx[:,None] + np.arange(9)[None] % 3 - 1
+    yy = cy[:,None] + np.arange(9)[None] // 3 - 1
+    outside = (xx < 0) | (xx > 6) | (yy < 0) | (yy > 6)
+    valid = ~(outside.astype(np.int32) @ (digits != 0).astype(np.int32).T).astype(bool)
+    representatives, inverse = np.unique(joint[valid], return_inverse=True)
+    mapped = np.full((49,19683), -1, np.int32)
+    mapped[valid] = inverse
+    canonical = torch.tensor(mapped, device="cuda").long()
+    initial_codes = local_canonical[representatives % 19683]
     xy = torch.arange(49, device="cuda")
     x, y = torch.minimum(xy % 7, 6 - xy % 7), torch.minimum(xy // 7, 6 - xy // 7)
     _, orbit = torch.unique(torch.minimum(x, y) * 4 + torch.maximum(x, y), return_inverse=True)
@@ -70,7 +93,7 @@ def main():
     reverse = (digits * power.flip(0)).sum(1)
     _, line_canon = torch.unique(torch.minimum(code, reverse), return_inverse=True)
     groups = torch.tensor([min(i, 6 - i) for i in range(7)] * 2, device="cuda")
-    table = torch.zeros(6, 2862, device="cuda", requires_grad=True)
+    table = torch.zeros(6, len(representatives), device="cuda", requires_grad=True)
     square = torch.zeros(6, 10, device="cuda", requires_grad=True)
     linear = torch.zeros(6, 4, device="cuda", requires_grad=True)
     tempo = torch.zeros(6, device="cuda", requires_grad=True)
@@ -99,11 +122,16 @@ def main():
     if args.init:
         initial = np.load(args.init)
         scale = initial["scale"].item()
-        representatives = [int((orbit == i).nonzero()[0]) for i in range(10)]
+        square_representatives = [int((orbit == i).nonzero()[0]) for i in range(10)]
         with torch.no_grad():
             for key, a in zip(("table", "square", "linear", "tempo", "line", "edge"), parameters):
-                values = initial[key][:, representatives] if key == "square" else initial[key]
+                values = initial[key][:, square_representatives] if key == "square" else initial[key]
+                if key == "table" and values.shape[1] == 2862: values = values[:, initial_codes]
                 a.copy_(torch.tensor(values, device="cuda") / scale)
+    anchor = table.detach().clone()
+    if args.init:
+        for parameter in parameters[1:]: parameter.requires_grad_(False)
+        parameters = [table]
     optimizer = torch.optim.Adam(parameters, lr=0.003)
 
     encoded = [[] for _ in range(6)]
@@ -114,7 +142,7 @@ def main():
         index, pieces, scalar, _ = encode(bb, side)
         cells = (pieces + 3 * (pieces < 0)).reshape(-1, 7, 7).long()
         li = torch.cat([(cells * power).sum(2), (cells.transpose(1, 2) * power).sum(2)], 1)
-        values = [canonical[index].to(torch.int16), pieces.to(torch.int8), scalar.to(torch.int8), (pieces == 0).sum(1).to(torch.int8), line_canon[li].to(torch.int16)]
+        values = [canonical[xy[None], index].to(torch.int32), pieces.to(torch.int8), scalar.to(torch.int8), (pieces == 0).sum(1).to(torch.int8), line_canon[li].to(torch.int16)]
         di = (cells.flatten(1)[:, edge_squares] * edge_power).sum(2)
         values.append(edge_canon[di].to(torch.int16))
         for output, value in zip(encoded, values):
@@ -153,7 +181,7 @@ def main():
         total = 0
         for i in torch.randperm(split, device="cuda").split(16384):
             value, expected, _ = evaluate(i)
-            error = F.mse_loss(torch.tanh(value), expected) + 1e-7 * table.square().sum()
+            error = F.mse_loss(torch.tanh(value), expected) + 1e-7 * (table - anchor).square().sum()
             optimizer.zero_grad()
             error.backward()
             optimizer.step()
@@ -176,24 +204,30 @@ def main():
             scale = 100 * numerator / denominator
         arrays = [torch.round(a * scale).to(torch.int16).cpu().numpy() for a in (table, square[:, orbit], linear, tempo, line, edge)]
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(args.out.with_suffix(".npz"), **dict(zip(("table", "square", "linear", "tempo", "line", "edge"), arrays)), scale=scale, knots=knots.cpu().numpy())
-    arrays[0] = arrays[0][:, canonical.cpu().numpy()]
+    np.savez(args.out.with_suffix(".npz"), **dict(zip(("table", "square", "linear", "tempo", "line", "edge"), arrays)), scale=scale, knots=knots.cpu().numpy(), representatives=representatives)
     arrays[-1] = arrays[-1][:, :, edge_canon.cpu().numpy()]
     raw = b"".join(a.astype("<i2").tobytes() for a in arrays)
+    lookup = canonical.cpu().numpy()[[0, 1, 2, 3, 8, 9, 10, 16, 17, 24]]
+    arrays[0] = arrays[0][:, lookup]
+    arrays[0][:, lookup < 0] = 0
     text = """#pragma once
 #include <cstdint>
+#include "board.h"
 namespace ataxx {
 template<int N> struct PatternWeightsBase {
-std::int16_t table[N][19683], square[N][49], linear[N][4], tempo[N], line[N][4][1134], edge[N][3][6561];
+std::int16_t table[N][10][19683], square[N][49], linear[N][4], tempo[N], line[N][4][1134], edge[N][3][6561];
 };
 using PatternWeights = PatternWeightsBase<46>;
+struct PackedPatternWeights {
+std::int16_t table[6][65286], square[6][49], linear[6][4], tempo[6], line[6][4][1134], edge[6][3][6561];
+};
 inline const PatternWeights& patternWeights() {
     static const PatternWeights weights = [] {
         const char* data = "@@DATA@@";
         const char* alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         int digits[128]{};
         for (int i = 0; i < 64; ++i) digits[int(alphabet[i])] = i;
-        PatternWeightsBase<6> packed;
+        PackedPatternWeights packed;
         auto* out = reinterpret_cast<unsigned char*>(&packed);
         for (unsigned i = 0; i < sizeof(packed) / 3; ++i) {
             unsigned value = (digits[int(data[4*i])] << 18) | (digits[int(data[4*i+1])] << 12) | (digits[int(data[4*i+2])] << 6) | digits[int(data[4*i+3])];
@@ -217,7 +251,30 @@ inline const PatternWeights& patternWeights() {
                 }
             }
         };
-        expand(result.table, packed.table);
+        const int squares[10] = {0, 1, 2, 3, 8, 9, 10, 16, 17, 24};
+        std::vector<int> index(10 * 19683, -1);
+        int count = 0;
+        for (int r = 0; r < 10; ++r) for (int code = 0; code < 19683; ++code) {
+            int s = squares[r], value = code;
+            bool valid = true;
+            for (int i = 0; i < 9; ++i, value /= 3)
+                if (!onBoard(s % 7 + i % 3 - 1, s / 7 + i / 3 - 1) && value % 3) valid = false;
+            if (!valid) continue;
+            int canonical = code;
+            for (int t = 1; t < 8; ++t)
+                if (T().symSq[t][s] == s) canonical = std::min(canonical, int(T().patternSym[t][code]));
+            index[r * 19683 + code] = canonical == code ? count++ : index[r * 19683 + canonical];
+        }
+        for (int e = 0; e <= 45; ++e) {
+            int lo = 0;
+            while (lo < 4 && knots[lo + 1] <= e) ++lo;
+            int den = knots[lo + 1] - knots[lo], num = e - knots[lo];
+            for (int r = 0; r < 10; ++r) for (int code = 0; code < 19683; ++code) {
+                int k = index[r * 19683 + code];
+                int value = k < 0 ? 0 : (den - num) * packed.table[lo][k] + num * packed.table[lo + 1][k];
+                result.table[e][r][code] = value >= 0 ? (value + den / 2) / den : -((-value + den / 2) / den);
+            }
+        }
         expand(result.square, packed.square);
         expand(result.linear, packed.linear);
         expand(result.tempo, packed.tempo);

@@ -98,6 +98,8 @@ ATAXX_HD inline u64 transposeBoard(u64 b) {
 ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
     int phase = popcnt(empty);
+    constexpr int regions[49] = {0, 1, 2, 3, 2, 1, 0, 1, 4, 5, 6, 5, 4, 1, 2, 5, 7, 8, 7, 5, 2, 3, 6, 8, 9, 8, 6, 3, 2, 5, 7, 8, 7, 5, 2, 1, 4, 5, 6, 5, 4, 1, 0, 1, 2, 3, 2, 1, 0};
+    constexpr int transforms[49] = {0, 0, 0, 0, 1, 1, 1, 4, 0, 0, 0, 1, 1, 5, 4, 4, 0, 0, 1, 5, 5, 4, 4, 4, 0, 5, 5, 5, 6, 6, 2, 2, 3, 7, 7, 6, 2, 2, 2, 3, 3, 7, 2, 2, 2, 2, 3, 3, 3};
     u64 rows[9][2]{};
     int score = w.tempo[phase], columns[7], rowCodes[7];
     u64 ownT = transposeBoard(own), oppT = transposeBoard(opp);
@@ -111,8 +113,8 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     for (int y = 0; y < 7; ++y) {
         u64 a = rows[y][0] + 27 * rows[y + 1][0] + 729 * rows[y + 2][0];
         u64 b = rows[y][1] + 27 * rows[y + 1][1] + 729 * rows[y + 2][1];
-        for (int x = 0; x < 4; ++x) score += w.table[phase][(a >> (16 * x)) & 65535];
-        for (int x = 0; x < 3; ++x) score += w.table[phase][(b >> (16 * x)) & 65535];
+        for (int x = 0; x < 4; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; score += w.table[phase][regions[s]][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; score += w.table[phase][regions[s]][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
     }
     for (int x = 0; x < 7; ++x) score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
     for (int band = 0; band < 3; ++band) {
