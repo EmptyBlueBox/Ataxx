@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 #include "board.h"
 
 namespace ataxx {
@@ -138,7 +139,7 @@ struct Dense8 {
   float *mult = nullptr, *b = nullptr, lo = 0, inv = 0;
 
   void read(FILE* f, int inputs, int outputs) {
-    in = inputs, out = outputs, wide = pad(out), deep = (in + 31) / 32 * 32;
+    in = inputs, out = outputs, wide = (out + 15) / 16 * 16, deep = (in + 31) / 32 * 32;
     float range[2];
     w = (int8_t*)aligned_alloc(64, (size_t)wide * deep);
     q = (uint8_t*)aligned_alloc(64, (size_t)(SQ + 1) * deep);
@@ -149,37 +150,36 @@ struct Dense8 {
     std::fill(b, b + wide, 0.f);
     if (fread(range, 4, 2, f) != 2) abort();
     lo = range[0], inv = 1 / range[1];
+    std::vector<int8_t> raw((size_t)out * in);
+    if (fread(raw.data(), 1, raw.size(), f) != raw.size()) abort();
     for (int o = 0; o < out; o++)
-      if (fread(w + o * deep, 1, in, f) != (size_t)in) abort();
+      for (int i = 0; i < in; i++) w[((i / 4) * wide + o) * 4 + i % 4] = raw[(size_t)o * in + i];
     if (fread(mult, 4, out, f) != (size_t)out || fread(b, 4, out, f) != (size_t)out) abort();
-  }
-
-  static inline __attribute__((always_inline)) __m128i sum(__m256i a, __m256i b, __m256i c, __m256i d) {
-    a = _mm256_hadd_epi32(_mm256_hadd_epi32(a, b), _mm256_hadd_epi32(c, d));
-    return _mm_add_epi32(_mm256_castsi256_si128(a), _mm256_extracti128_si256(a, 1));
   }
 
 #define ATAXX_PRODUCT(NAME, TARGET, STEP) \
   __attribute__((target(TARGET))) void NAME(int n, float* y) const { \
     const __m256i ones = _mm256_set1_epi16(1), twos = _mm256_set1_epi16(2), half = _mm256_set1_epi8(127), bit = _mm256_set1_epi8(1); \
     (void)ones, (void)twos, (void)half, (void)bit; \
-    for (int r = 0; r < n; r += 2) { \
-      int s = std::min(r + 1, n - 1); \
-      const uint8_t *x0 = q + r * deep, *x1 = q + s * deep; \
-      float *y0 = y + r * wide, *y1 = y + s * wide; \
-      for (int o = 0; o < out; o += 4) { \
-        const int8_t *p0 = w + o * deep, *p1 = p0 + deep, *p2 = p1 + deep, *p3 = p2 + deep; \
+    for (int r = 0; r < n; r += 4) { \
+      const uint8_t* x[4]; \
+      float* yr[4]; \
+      for (int e = 0; e < 4; e++) x[e] = q + std::min(r + e, n - 1) * deep, yr[e] = y + std::min(r + e, n - 1) * wide; \
+      for (int o = 0; o < wide; o += 16) { \
         __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0, c0 = a0, c1 = a0, c2 = a0, c3 = a0; \
-        for (int i = 0; i < deep; i += 32) { \
-          __m256i u = _mm256_load_si256((const __m256i*)(x0 + i)), v = _mm256_load_si256((const __m256i*)(x1 + i)); \
-          __m256i m0 = _mm256_load_si256((const __m256i*)(p0 + i)), m1 = _mm256_load_si256((const __m256i*)(p1 + i)); \
-          __m256i m2 = _mm256_load_si256((const __m256i*)(p2 + i)), m3 = _mm256_load_si256((const __m256i*)(p3 + i)); \
-          a0 = STEP(a0, u, m0), a1 = STEP(a1, u, m1), a2 = STEP(a2, u, m2), a3 = STEP(a3, u, m3); \
-          c0 = STEP(c0, v, m0), c1 = STEP(c1, v, m1), c2 = STEP(c2, v, m2), c3 = STEP(c3, v, m3); \
+        const int8_t* p = w + o * 4; \
+        for (int k = 0; k < deep; k += 4, p += wide * 4) { \
+          __m256i m0 = _mm256_load_si256((const __m256i*)p), m1 = _mm256_load_si256((const __m256i*)(p + 32)); \
+          __m256i u0 = _mm256_set1_epi32(*(const int*)(x[0] + k)), u1 = _mm256_set1_epi32(*(const int*)(x[1] + k)); \
+          __m256i u2 = _mm256_set1_epi32(*(const int*)(x[2] + k)), u3 = _mm256_set1_epi32(*(const int*)(x[3] + k)); \
+          a0 = STEP(a0, u0, m0), c0 = STEP(c0, u0, m1), a1 = STEP(a1, u1, m0), c1 = STEP(c1, u1, m1); \
+          a2 = STEP(a2, u2, m0), c2 = STEP(c2, u2, m1), a3 = STEP(a3, u3, m0), c3 = STEP(c3, u3, m1); \
         } \
-        __m128 m = _mm_load_ps(mult + o), d = _mm_load_ps(b + o); \
-        _mm_store_ps(y1 + o, _mm_add_ps(_mm_mul_ps(_mm_cvtepi32_ps(sum(c0, c1, c2, c3)), m), d)); \
-        _mm_store_ps(y0 + o, _mm_add_ps(_mm_mul_ps(_mm_cvtepi32_ps(sum(a0, a1, a2, a3)), m), d)); \
+        __m256 m = _mm256_load_ps(mult + o), d = _mm256_load_ps(b + o), m8 = _mm256_load_ps(mult + o + 8), d8 = _mm256_load_ps(b + o + 8); \
+        _mm256_store_ps(yr[3] + o, _mm256_fmadd_ps(_mm256_cvtepi32_ps(a3), m, d)), _mm256_store_ps(yr[3] + o + 8, _mm256_fmadd_ps(_mm256_cvtepi32_ps(c3), m8, d8)); \
+        _mm256_store_ps(yr[2] + o, _mm256_fmadd_ps(_mm256_cvtepi32_ps(a2), m, d)), _mm256_store_ps(yr[2] + o + 8, _mm256_fmadd_ps(_mm256_cvtepi32_ps(c2), m8, d8)); \
+        _mm256_store_ps(yr[1] + o, _mm256_fmadd_ps(_mm256_cvtepi32_ps(a1), m, d)), _mm256_store_ps(yr[1] + o + 8, _mm256_fmadd_ps(_mm256_cvtepi32_ps(c1), m8, d8)); \
+        _mm256_store_ps(yr[0] + o, _mm256_fmadd_ps(_mm256_cvtepi32_ps(a0), m, d)), _mm256_store_ps(yr[0] + o + 8, _mm256_fmadd_ps(_mm256_cvtepi32_ps(c0), m8, d8)); \
       } \
     } \
   }
