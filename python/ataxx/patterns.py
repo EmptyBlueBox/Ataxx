@@ -146,7 +146,9 @@ def main():
                 error += F.mse_loss(torch.tanh(value), expected, reduction="sum").item()
             return error / (len(rows) - split)
 
-    best = float("inf")
+    best = validation()
+    saved = [a.detach().clone() for a in parameters]
+    print(json.dumps(dict(rows=len(rows), train=split, initial=best)), flush=True)
     for epoch in range(args.epochs):
         total = 0
         for i in torch.randperm(split, device="cuda").split(16384):
