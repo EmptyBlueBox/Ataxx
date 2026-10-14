@@ -43,8 +43,11 @@ def main():
     while lib.arena_collect(feats[0].numpy().ctypes.data, feats[1].numpy().ctypes.data, counts.ctypes.data):
         outputs = []
         for net, feat, count in zip(nets, feats, counts):
+            if not count:
+                outputs += [np.zeros((1, NMOVES), np.float32), np.zeros((1, 4), np.float32)]
+                continue
             with torch.autocast("cuda", torch.float16), torch.no_grad():
-                policy, value = net(feat[:max(1, count)].cuda().contiguous(memory_format=torch.channels_last))
+                policy, value = net(feat[:count].cuda().contiguous(memory_format=torch.channels_last))
             outputs += [np.ascontiguousarray(policy.float().cpu().numpy()), np.ascontiguousarray(value.float().cpu().numpy())]
         lib.arena_feed(*(o.ctypes.data for o in outputs))
     lib.arena_scores(scores.ctypes.data)
