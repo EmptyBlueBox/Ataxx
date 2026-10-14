@@ -150,6 +150,27 @@ struct SearchStats {
     double seconds = 0;
 };
 
+struct ExpandedDirectionalWeights {
+    std::int16_t destination[KINDS][19683], source[KINDS - 1][19683];
+};
+
+inline const ExpandedDirectionalWeights& expandedDirectionalWeights() {
+    static const ExpandedDirectionalWeights weights = [] {
+        ExpandedDirectionalWeights result;
+        const Tables& t = T();
+        for (int kind = 0; kind < KINDS; ++kind)
+            for (int code = 0; code < 19683; ++code) {
+                int oriented = t.patternSym[t.moveTransform[kind]][code];
+                int index = oriented % 81 + oriented / 243 * 81;
+                int family = t.moveFamily[kind];
+                result.destination[kind][code] = directionalWeights.destination[family][index];
+                if (kind) result.source[kind - 1][code] = directionalWeights.source[family - 1][index];
+            }
+        return result;
+    }();
+    return weights;
+}
+
 template<class H>
 struct SearchCore {
     struct Frame {
@@ -163,6 +184,7 @@ struct SearchCore {
     const Weights* evalWeights = nullptr;
     const PatternWeights* patterns = nullptr;
     const DirectionalWeights* directional = nullptr;
+    const ExpandedDirectionalWeights* expandedDirectional = nullptr;
     std::uint64_t nodeLimit = 0;
     Frame* frames;
     Pos* samples = nullptr;
@@ -268,13 +290,20 @@ struct SearchCore {
                         int score = 1000 * popcnt(ring & opp) + frame.scores[j];
                         score += move < SQ ? 500 + 100 * popcnt(ring & own) : -200 * popcnt(t.ring1[sqOfBit(t.jumpOrigin[move % SQ][move / SQ - 1])] & own);
                         if (!legacy) {
-                            int to = move % SQ, kind = move / SQ, family = t.moveFamily[kind], transform = t.moveTransform[kind];
+                            int to = move % SQ, kind = move / SQ, family = t.moveFamily[kind];
+#ifdef __CUDA_ARCH__
+                            int transform = t.moveTransform[kind];
                             int code = t.patternSym[transform][codes[to]];
-                            score = directional->destination[family][code % 81 + code / 243 * 81] + directional->square[family][to] + directional->bias[phase][family] + frame.scores[j];
+                            score = directional->destination[family][code % 81 + code / 243 * 81];
                             if (kind) {
                                 int source = t.patternSym[transform][codes[sqOfBit(t.jumpOrigin[to][kind - 1])]];
                                 score += directional->source[family - 1][source % 81 + source / 243 * 81];
                             }
+#else
+                            score = expandedDirectional->destination[kind][codes[to]];
+                            if (kind) score += expandedDirectional->source[kind - 1][codes[sqOfBit(t.jumpOrigin[to][kind - 1])]];
+#endif
+                            score += directional->square[family][to] + directional->bias[phase][family] + frame.scores[j];
                         }
                         if (move == frame.killer) score += 400;
                         frame.scores[j] = score;
@@ -396,6 +425,7 @@ public:
         core.evalWeights = weights;
         core.patterns = &patternWeights();
         core.directional = &directionalWeights;
+        core.expandedDirectional = &expandedDirectionalWeights();
         core.table = table.data();
         core.evalTable = evaluations.data();
         core.frames = frames.data();
