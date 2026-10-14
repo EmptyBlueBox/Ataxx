@@ -326,6 +326,14 @@ struct Search {
     return bi;
   }
 
+  float improvedValue() const {
+    const Node& r = nodes[0];
+    float w[NMOVES], v = 0;
+    improved(w);
+    for (int j = 0; j < r.n; j++) v += w[j] * q(r, edges[r.edge + j], r.sum / r.visits);
+    return v / 65535;
+  }
+
   template <class Rng>
   void noise(Rng& rng, float weight = 0.25f, float concentration = 10.83f) {
     Node& r = nodes[0];
