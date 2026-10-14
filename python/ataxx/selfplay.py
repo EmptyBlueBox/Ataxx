@@ -29,8 +29,10 @@ def library():
 
 
 def main():
+    from ataxx.distill import Teacher
     parser = argparse.ArgumentParser()
     parser.add_argument("--net", type=Path, required=True)
+    parser.add_argument("--student", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--games", type=int, default=2048)
     parser.add_argument("--full", type=int, default=400)
@@ -68,7 +70,10 @@ def main():
     while True:
         mtime = args.net.stat().st_mtime
         if mtime != loaded:
-            net, loaded = model.load(args.net, "cuda").to(memory_format=torch.channels_last), mtime
+            if args.student:
+                net, loaded = Teacher(args.net, student=model.load(args.student, "cuda")).net, mtime
+            else:
+                net, loaded = model.load(args.net, "cuda").to(memory_format=torch.channels_last), mtime
         if pending[0] is None:
             submit(0)
             submit(1)

@@ -109,7 +109,7 @@ struct Search {
   float sigma(const Node& r, float value) const {
     uint32_t top = 0;
     for (int j = 0; j < r.n; j++) top = std::max(top, childVisits(j));
-    return (50.f + top) * (value + 1) / 2;
+    return (50.f + top) * 0.1f * (value + 1) / 2;
   }
 
   float completed(const Node& r, int j) const {
@@ -134,7 +134,6 @@ struct Search {
   }
 
   int gumbelPick() {
-    int j = cand[gNext++];
     if (gNext == (int)cand.size()) {
       gNext = 0;
       if (++gRound == gPer) {
@@ -146,7 +145,7 @@ struct Search {
         gRound = 0;
       }
     }
-    return j;
+    return cand[gNext++];
   }
 
   void improved(float* out) const {
