@@ -87,6 +87,16 @@ inline const PatternWeights& patternWeights() {
         expand(result.linear, packed.linear);
         expand(result.tempo, packed.tempo);
         expand(result.line, packed.line);
+        for (int e = 0; e <= 45; ++e) for (int r = 0; r < 4; ++r)
+            for (int code = 0; code < 2187; ++code) {
+                int value = code, reverse = 0, score = 0;
+                for (int x = 0; x < 7; ++x, value /= 3) {
+                    int digit = value % 3;
+                    reverse = 3 * reverse + digit;
+                    score += (result.square[e][7*r+x] + result.linear[e][0]) * ((digit == 1) - (digit == 2));
+                }
+                if (code <= reverse) result.line[e][r][T().lineOrbit[code]] += score / 2;
+            }
         return result;
     }();
     return weights;

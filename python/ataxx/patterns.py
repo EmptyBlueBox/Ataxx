@@ -299,6 +299,16 @@ inline const PatternWeights& patternWeights() {
         expand(result.linear, packed.linear);
         expand(result.tempo, packed.tempo);
         expand(result.line, packed.line);
+        for (int e = 0; e <= 45; ++e) for (int r = 0; r < 4; ++r)
+            for (int code = 0; code < 2187; ++code) {
+                int value = code, reverse = 0, score = 0;
+                for (int x = 0; x < 7; ++x, value /= 3) {
+                    int digit = value % 3;
+                    reverse = 3 * reverse + digit;
+                    score += (result.square[e][7*r+x] + result.linear[e][0]) * ((digit == 1) - (digit == 2));
+                }
+                if (code <= reverse) result.line[e][r][T().lineOrbit[code]] += score / 2;
+            }
         return result;
     }();
     return weights;
@@ -329,6 +339,12 @@ inline const PatternWeights& patternWeights() {
     strips[:, 3] = strips[:, 0, reverse]
     strips[:, 4:] = 2 * edge[:, 1:]
     expanded = [2 * table[:, 4:], 2 * square, 2 * linear, 2 * tempo, 2 * line, strips]
+    codes = np.arange(2187)
+    digits = codes[:, None] // (3 ** np.arange(7)) % 3
+    digits = digits[codes <= digits @ (3 ** np.arange(6, -1, -1))]
+    pieces = (digits == 1).astype(np.int32) - (digits == 2)
+    for r in range(4):
+        expanded[4][:, r] += (square[:, 7*r:7*r+7] + linear[:, :1]) @ pieces.T
     args.out.with_suffix(".bin").write_bytes(b"".join(a.astype("<i2").tobytes() for a in expanded))
     print(json.dumps(dict(scale=scale, bytes=args.out.stat().st_size)), flush=True)
 

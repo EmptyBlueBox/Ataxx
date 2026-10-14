@@ -125,11 +125,7 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
             for (int j = 0; j < 4; ++j) score += w.edge[phase][band ? band + 3 : j][(codes >> (16 * j)) & 65535];
         }
     }
-    const u64 masks[10] = {0x41000000000041ULL, 0x22410000004122ULL, 0x14004100410014ULL, 0x8000041000008ULL, 0x220000002200ULL, 0x142200221400ULL, 0x80022000800ULL, 0x1400140000ULL, 0x814080000ULL, 0x8000000ULL};
-    const int representatives[10] = {0, 1, 2, 3, 8, 9, 10, 16, 17, 24};
-    for (int i = 0; i < 10; ++i) score += w.square[phase][representatives[i]] * (popcnt(own & masks[i]) - popcnt(opp & masks[i]));
     u64 frontier = dilate1(empty);
-    score += w.linear[phase][0] * (popcnt(own) - popcnt(opp));
     score += w.linear[phase][1] * (popcnt(dilate1(own) & empty) - popcnt(dilate1(opp) & empty));
     score += w.linear[phase][2] * (popcnt(dilate2(own) & empty) - popcnt(dilate2(opp) & empty));
     score += w.linear[phase][3] * (popcnt(frontier & own) - popcnt(frontier & opp));
