@@ -23,29 +23,39 @@ inline float total(V v) {
   return s;
 }
 
-inline V expNeg(V x) {
-  x = x > splat(-87.f) ? x : splat(-87.f);
-  VI n = __builtin_convertvector(x * 1.44269504f - 0.5f, VI);
-  V f = __builtin_convertvector(n, V);
-  x = x - f * 0.693147181f;
-  V y = splat(8.3334519073e-3f);
-  y = y * x + 4.1665795894e-2f;
-  y = y * x + 1.6666665459e-1f;
-  y = y * x + 5.0000001201e-1f;
-  y = y * (x * x) + x + 1.f;
-  return y * (V)((n + 127) << 23);
+inline __m256 exp8(__m256 x) {
+  x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-87.f)), _mm256_set1_ps(60.f));
+  __m256 n = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+  x = _mm256_fnmadd_ps(n, _mm256_set1_ps(0.693147181f), x);
+  __m256 y = _mm256_set1_ps(8.3334519073e-3f);
+  y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.1665795894e-2f));
+  y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.6666665459e-1f));
+  y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5.0000001201e-1f));
+  y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.f));
+  y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.f));
+  return _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(y), _mm256_slli_epi32(_mm256_cvtps_epi32(n), 23)));
 }
 
-inline V gelu(V x) {
-  V a = (x < 0 ? -x : x) * 0.70710678f;
-  V t = 1.f / (a * 0.3275911f + 1.f);
-  V p = splat(1.061405429f);
-  p = p * t - 1.453152027f;
-  p = p * t + 1.421413741f;
-  p = p * t - 0.284496736f;
-  p = p * t + 0.254829592f;
-  V erf = 1.f - p * t * expNeg(-a * a);
-  return x * 0.5f * (1.f + (x < 0 ? -erf : erf));
+inline __m256 gelu8(__m256 x) {
+  __m256 a = _mm256_mul_ps(_mm256_andnot_ps(_mm256_set1_ps(-0.f), x), _mm256_set1_ps(0.70710678f));
+  __m256 d = _mm256_fmadd_ps(a, _mm256_set1_ps(0.3275911f), _mm256_set1_ps(1.f)), t = _mm256_rcp_ps(d);
+  t = _mm256_mul_ps(t, _mm256_fnmadd_ps(d, t, _mm256_set1_ps(2.f)));
+  __m256 p = _mm256_fmadd_ps(_mm256_set1_ps(1.061405429f), t, _mm256_set1_ps(-1.453152027f));
+  p = _mm256_fmadd_ps(p, t, _mm256_set1_ps(1.421413741f));
+  p = _mm256_fmadd_ps(p, t, _mm256_set1_ps(-0.284496736f));
+  p = _mm256_fmadd_ps(p, t, _mm256_set1_ps(0.254829592f));
+  __m256 erf = _mm256_fnmadd_ps(_mm256_mul_ps(p, t), exp8(_mm256_mul_ps(_mm256_mul_ps(a, a), _mm256_set1_ps(-1.f))), _mm256_set1_ps(1.f));
+  erf = _mm256_or_ps(erf, _mm256_and_ps(x, _mm256_set1_ps(-0.f)));
+  return _mm256_mul_ps(_mm256_mul_ps(x, _mm256_set1_ps(0.5f)), _mm256_add_ps(erf, _mm256_set1_ps(1.f)));
+}
+
+inline void transpose8(__m256* r) {
+  __m256 t0 = _mm256_unpacklo_ps(r[0], r[1]), t1 = _mm256_unpackhi_ps(r[0], r[1]), t2 = _mm256_unpacklo_ps(r[2], r[3]), t3 = _mm256_unpackhi_ps(r[2], r[3]);
+  __m256 t4 = _mm256_unpacklo_ps(r[4], r[5]), t5 = _mm256_unpackhi_ps(r[4], r[5]), t6 = _mm256_unpacklo_ps(r[6], r[7]), t7 = _mm256_unpackhi_ps(r[6], r[7]);
+  __m256 s0 = _mm256_shuffle_ps(t0, t2, 0x44), s1 = _mm256_shuffle_ps(t0, t2, 0xEE), s2 = _mm256_shuffle_ps(t1, t3, 0x44), s3 = _mm256_shuffle_ps(t1, t3, 0xEE);
+  __m256 s4 = _mm256_shuffle_ps(t4, t6, 0x44), s5 = _mm256_shuffle_ps(t4, t6, 0xEE), s6 = _mm256_shuffle_ps(t5, t7, 0x44), s7 = _mm256_shuffle_ps(t5, t7, 0xEE);
+  r[0] = _mm256_permute2f128_ps(s0, s4, 0x20), r[1] = _mm256_permute2f128_ps(s1, s5, 0x20), r[2] = _mm256_permute2f128_ps(s2, s6, 0x20), r[3] = _mm256_permute2f128_ps(s3, s7, 0x20);
+  r[4] = _mm256_permute2f128_ps(s0, s4, 0x31), r[5] = _mm256_permute2f128_ps(s1, s5, 0x31), r[6] = _mm256_permute2f128_ps(s2, s6, 0x31), r[7] = _mm256_permute2f128_ps(s3, s7, 0x31);
 }
 
 struct Dense {
@@ -277,19 +287,6 @@ struct Transformer {
     kt = buffer(key * PS), score = buffer(2 * PS);
   }
 
-  static __m256 exp8(__m256 x) {
-    x = _mm256_min_ps(_mm256_max_ps(x, _mm256_set1_ps(-87.f)), _mm256_set1_ps(60.f));
-    __m256 n = _mm256_round_ps(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504f)), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
-    x = _mm256_fnmadd_ps(n, _mm256_set1_ps(0.693147181f), x);
-    __m256 y = _mm256_set1_ps(8.3334519073e-3f);
-    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(4.1665795894e-2f));
-    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.6666665459e-1f));
-    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(5.0000001201e-1f));
-    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.f));
-    y = _mm256_fmadd_ps(y, x, _mm256_set1_ps(1.f));
-    return _mm256_castsi256_ps(_mm256_add_epi32(_mm256_castps_si256(y), _mm256_slli_epi32(_mm256_cvtps_epi32(n), 23)));
-  }
-
   static float total8(__m256 v) {
     __m128 s = _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
     s = _mm_add_ps(s, _mm_movehl_ps(s, s));
@@ -324,8 +321,13 @@ struct Transformer {
     const int hv = heads * d;
     for (int h = 0; h < heads; h++) {
       const float *q = big + h * key, *k = big + (heads + h) * key, *v = big + 2 * heads * key + h * d;
-      for (int t = 0; t < key; t++)
-        for (int j = 0; j < PS; j++) kt[t * PS + j] = j < SQ ? k[j * span + t] * scale : 0.f;
+      for (int t = 0; t < key; t += W)
+        for (int j = 0; j < PS; j += W) {
+          __m256 r[W];
+          for (int e = 0; e < W; e++) r[e] = j + e < SQ ? _mm256_mul_ps(_mm256_load_ps(k + (j + e) * span + t), _mm256_set1_ps(scale)) : _mm256_setzero_ps();
+          transpose8(r);
+          for (int e = 0; e < W; e++) _mm256_store_ps(kt + (t + e) * PS + j, r[e]);
+        }
       for (int i = 0; i < SQ; i += 2) {
         int i1 = std::min(i + 1, SQ - 1);
         const float *b0 = l.bias + (h * SQ + i) * PS, *b1 = l.bias + (h * SQ + i1) * PS, *q0 = q + i * span, *q1 = q + i1 * span;
@@ -378,7 +380,7 @@ struct Transformer {
       l.norm2.run(x, y);
       if (quant) l.up8.run(y, c, SQ, big);
       else l.up.run(y, c, SQ, big);
-      for (int i = 0; i < SQ * ratio * c; i += W) store(big + i, smooth ? gelu(load(big + i)) : load(big + i) > 0 ? load(big + i) : splat(0));
+      for (int i = 0; i < SQ * ratio * c; i += W) _mm256_store_ps(big + i, smooth ? gelu8(_mm256_load_ps(big + i)) : _mm256_max_ps(_mm256_load_ps(big + i), _mm256_setzero_ps()));
       if (quant) l.down8.run(big, ratio * c, SQ, y);
       else l.down.run(big, ratio * c, SQ, y);
       for (int i = 0; i < SQ * c; i += W) store(x + i, load(x + i) + load(y + i));
