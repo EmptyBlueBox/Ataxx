@@ -16,10 +16,18 @@ add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp"
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Submission.cmake
-    DEPENDS ../python/src/board.h weights.h engine.hpp bot.cpp cmake/Submission.cmake
+    DEPENDS ../python/src/board.h weights.h patterns.h directional.h engine.hpp bot.cpp cmake/Submission.cmake
     VERBATIM
 )
 add_custom_target(submission DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp")
+
+option(ATAXX_CUDA "Build the GPU arena" OFF)
+if(ATAXX_CUDA)
+    enable_language(CUDA)
+    add_executable(arena arena.cu)
+    set_target_properties(arena PROPERTIES CUDA_STANDARD 17 CUDA_SEPARABLE_COMPILATION ON)
+    target_compile_options(arena PRIVATE --expt-relaxed-constexpr -diag-suppress=20014)
+endif()
 
 option(ATAXX_DESKTOP "Build the desktop game" ON)
 if(ATAXX_DESKTOP)

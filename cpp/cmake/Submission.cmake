@@ -1,5 +1,5 @@
-set(source "")
-foreach(name ../python/src/board.h weights.h engine.hpp bot.cpp)
+set(source "#pragma GCC optimize(\"O3\")\n")
+foreach(name ../python/src/board.h weights.h patterns.h directional.h engine.hpp bot.cpp)
     file(READ "${SOURCE_DIR}/${name}" text)
     string(REGEX REPLACE "#include \"[^\n]*\n|#pragma once\n" "" text "${text}")
     string(APPEND source "${text}\n")
