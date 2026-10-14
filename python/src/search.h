@@ -10,7 +10,7 @@ struct Node {
   uint32_t edge = 0, visits = 0;
   float sum = 0, pv = 0;
   uint16_t n = 0;
-  bool expanded = false, proven = false;
+  bool expanded = false, proven = false, busy = false;
 };
 
 struct Edge {
@@ -19,10 +19,19 @@ struct Edge {
   Move move;
 };
 
+struct Parked {
+  std::vector<uint32_t> path;
+  std::vector<Move> trail;
+  Pos leaf;
+};
+
 struct Search {
   std::vector<Node> nodes;
   std::vector<Edge> edges;
   std::vector<uint32_t> path;
+  std::vector<Move> trail;
+  std::vector<Parked> parked;
+  bool collided = false;
   Pos root, leaf;
   History hist;
   int depth = 0;
@@ -186,12 +195,18 @@ struct Search {
 
   bool select(float* feat) {
     path.clear();
+    trail.clear();
     Pos p = root;
     uint32_t ni = 0;
     for (;;) {
       path.push_back(ni);
       if (nodes[ni].proven) {
         backup(nodes[ni].pv);
+        return false;
+      }
+      if (nodes[ni].busy) {
+        for (; depth; depth--) hist.pop();
+        collided = true;
         return false;
       }
       if (!nodes[ni].expanded) {
@@ -211,6 +226,7 @@ struct Search {
       uint32_t ei = nodes[ni].edge + pick(nodes[ni], ni == 0);
       hist.push(p, edges[ei].move);
       play(p, edges[ei].move);
+      trail.push_back(edges[ei].move);
       depth++;
       if (!edges[ei].child) {
         Node c;
@@ -221,6 +237,35 @@ struct Search {
       }
       ni = edges[ei].child;
     }
+  }
+
+  int gather(float* feat, int cap) {
+    int k = 0;
+    collided = false;
+    for (int tries = 0; k < cap && tries < 4 * cap && !nodes[0].proven && !collided; tries++) {
+      if (!select(feat + (long)k * PLANES * SQ)) continue;
+      for (uint32_t i : path) nodes[i].visits++, nodes[i].sum += 1;
+      nodes[path.back()].busy = true;
+      parked.push_back({path, trail, leaf});
+      for (; depth; depth--) hist.pop();
+      k++;
+    }
+    return k;
+  }
+
+  void resolve(int j, const float* policy, const float* value) {
+    path = parked[j].path;
+    leaf = parked[j].leaf;
+    for (uint32_t i : path) nodes[i].visits--, nodes[i].sum -= 1;
+    nodes[path.back()].busy = false;
+    Pos p = root;
+    for (Move m : parked[j].trail) {
+      hist.push(p, m);
+      play(p, m);
+      depth++;
+    }
+    feed(policy, value);
+    if (j + 1 == (int)parked.size()) parked.clear();
   }
 
   static u64 cacheKey(const Pos& p) { return mix(mix(p.bb[0], p.bb[1]), p.side * 512 + p.ply); }
@@ -272,7 +317,7 @@ struct Search {
     for (int j = 0; j < r.n; j++) {
       const Edge& e = edges[r.edge + j];
       float s = childVisits(j) + (e.child && nodes[e.child].visits ? -nodes[e.child].sum / nodes[e.child].visits : -1.f) * 0.5f;
-      if (r.proven) s = e.child && nodes[e.child].proven ? 1e6f * (-nodes[e.child].pv + 2) + s : s;
+      if (e.child && nodes[e.child].proven) s -= 1e6f * nodes[e.child].pv;
       if (s > bs) bs = s, bi = j;
     }
     return bi;

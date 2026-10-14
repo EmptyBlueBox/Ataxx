@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from ataxx import model
+from ataxx.distill import Teacher
 from ataxx.match import ROOT, summary
 from ataxx.selfplay import NMOVES, library
 
@@ -28,7 +29,7 @@ def main():
     lib.arena_feed.argtypes = [ctypes.c_void_p] * 4
     lib.arena_scores.argtypes = [ctypes.c_void_p]
     n = 2 * args.pairs
-    nets = [model.load(path, "cuda").to(memory_format=torch.channels_last) for path in (args.a, args.b)]
+    nets = [Teacher(path).net if path.endswith(".onnx") else model.load(path, "cuda").to(memory_format=torch.channels_last) for path in (args.a, args.b)]
     feats = [torch.zeros(n, model.PLANES, 7, 7).pin_memory() for _ in nets]
     counts, scores = np.zeros(2, np.int32), np.zeros(n, np.float32)
     book = json.load(open(args.openings))

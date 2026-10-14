@@ -6,6 +6,7 @@ dependencies = [
     "torch==2.8.0",
     "numpy==2.3.3",
     "onnx==1.18.0",
+    "onnxruntime-gpu==1.22.0",
 ]
 
 [tool.uv]

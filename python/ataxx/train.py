@@ -39,7 +39,7 @@ def features(black, white, side, ply):
     return torch.cat(planes, 1)
 
 
-def batch(rows, device, squares, moves, mix=0.0):
+def batch(rows, device, squares, moves, mix=0.0, pure=0):
     t = {k: torch.from_numpy(np.ascontiguousarray(rows[k])).to(device) for k in ("bb", "fin", "idx", "cnt", "ply", "side", "z", "score", "q")}
     bb, fin, side = t["bb"].long(), t["fin"].long(), t["side"].long()
     x = features(bb[:, 0], bb[:, 1], side, t["ply"].long())
@@ -53,11 +53,13 @@ def batch(rows, device, squares, moves, mix=0.0):
     policy = torch.zeros_like(policy).scatter_(1, mv, policy)
     own = torch.zeros_like(own).scatter_(1, sq, own)
     z, q = t["z"].float(), t["q"].float() / 32767
-    w = mix * (q != 0).float()
+    known = ((fin[:, 0] | fin[:, 1]) != 0).float()
+    known[:pure] = 0
+    w = torch.where(known > 0, mix * (q != 0).float(), known + 1)
     win = (1 - w) * (z > 0).float() + w * (1 + q) / 2
     loss = (1 - w) * (z < 0).float() + w * (1 - q) / 2
     value = torch.stack([win, 1 - win - loss, loss], 1)
-    return x, policy, value, t["score"].float() / 49, own
+    return x, policy, value, t["score"].float() / 49, own, known
 
 
 class Data:
@@ -93,7 +95,14 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--net", type=Path)
     parser.add_argument("--blocks", type=int, default=6)
-    parser.add_argument("--channels", type=int, default=96)
+    parser.add_argument("--channels", type=int, default=64)
+    parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--ratio-mlp", type=int, default=2)
+    parser.add_argument("--relu", action="store_true")
+    parser.add_argument("--quant", action="store_true")
+    parser.add_argument("--key", type=int, default=0)
+    parser.add_argument("--value", type=int, default=0)
+    parser.add_argument("--hard", action="store_true")
     parser.add_argument("--batch", type=int, default=1024)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--ratio", type=float, default=4)
@@ -102,6 +111,7 @@ def main():
     parser.add_argument("--prune", type=float, default=8e7)
     parser.add_argument("--q-mix", type=float, default=0)
     parser.add_argument("--since", default="")
+    parser.add_argument("--extra", nargs=2)
     parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--export", type=int, default=1000)
     parser.add_argument("--keep", type=int, default=10000)
@@ -115,7 +125,12 @@ def main():
         net.load_state_dict(saved["raw"])
     else:
         saved = None
-        net = model.load(args.net, device) if args.net else model.Net(args.blocks, args.channels).to(device)
+        if args.net:
+            start = torch.load(args.net, map_location=device)
+            net = model.Net(**{**start["config"], "quant": args.quant}).to(device)
+            net.load_state_dict(start["state"], strict=False)
+        else:
+            net = model.Net(args.blocks, args.channels, args.heads, args.ratio_mlp, not args.relu, args.quant, args.key, args.value, not args.hard).to(device)
     net = net.to(memory_format=torch.channels_last)
     ema = copy.deepcopy(net).eval()
     decay = [p for n, p in net.named_parameters() if p.ndim > 1]
@@ -133,6 +148,7 @@ def main():
     squares, moves = tables(device)
     data = Data(args.data, int(args.window[0]), args.window[1], int(args.window[2]), int(args.prune), args.since)
     data.refresh()
+    extra = args.extra and Data(Path(args.extra[0]), 0, 1.0, int(2e7), int(args.prune), "")
     if args.fresh:
         samples = 0
     elif saved:
@@ -141,19 +157,22 @@ def main():
     began = time.time()
     while True:
         data.refresh()
+        if extra:
+            extra.refresh()
         if data.total < args.start or samples > args.ratio * (data.total + data.base):
             time.sleep(20)
             continue
         net.train()
         total = torch.zeros(5, device=device)
         for _ in range(args.export):
-            rows = data.sample(args.batch)
-            x, policy, value, score, own = batch(rows, device, squares, moves, args.q_mix)
+            rows, pure = data.sample(args.batch), int(float(args.extra[1]) * args.batch) if extra else 0
+            rows[:pure] = extra.sample(pure) if pure else rows[:0]
+            x, policy, value, score, own, known = batch(rows, device, squares, moves, args.q_mix, pure)
             with torch.autocast("cuda", torch.bfloat16):
                 p, v, o = net.train_forward(x.contiguous(memory_format=torch.channels_last))
             p, v, o = p.float(), v.float(), o.float()
             losses = torch.stack([-(policy * F.log_softmax(p, 1)).sum(1).mean(), -(value * F.log_softmax(v[:, :3], 1)).sum(1).mean(),
-                                  F.mse_loss(torch.tanh(v[:, 3]), score), F.mse_loss(torch.tanh(o), own),
+                                  ((torch.tanh(v[:, 3]) - score) ** 2 * known).mean(), ((torch.tanh(o) - own) ** 2 * known[:, None]).mean(),
                                   (p.argmax(1) == policy.argmax(1)).float().mean()])
             loss = losses[0] + 1.5 * losses[1] + 0.5 * losses[2] + 0.5 * losses[3]
             opt.zero_grad(set_to_none=True)

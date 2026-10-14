@@ -208,6 +208,15 @@ struct Arena {
 
 static Arena A;
 
+struct Probe {
+  std::vector<Search> s;
+  std::vector<int> count;
+  long evals;
+  int batch;
+};
+
+static Probe P;
+
 extern "C" {
 
 void create(int games, int fullVisits, int fastVisits, float pFull, int tempPlies, float lateTemp, int gumbel, float pOpening, unsigned long seed, int threads) {
@@ -311,6 +320,83 @@ void arena_params(int side, float cpuct, float cpuctLog, float fpu, float scoreW
     g.s[side].fpu = fpu;
     g.s[side].scoreWeight = scoreWeight;
   }
+}
+
+void probe_create(int n, long evals, int batch, const int* moves, const int* lengths, int threads) {
+  omp_set_num_threads(threads);
+  P.s.assign(n, Search{});
+  P.count.assign(n, 0);
+  P.evals = evals;
+  P.batch = batch;
+  for (int k = 0; k < n; k++) {
+    Pos p = start();
+    History h;
+    h.reset(p);
+    P.s[k].reset(p, h);
+    for (int i = 0; i < lengths[k]; i++) P.s[k].advance(fromCoord(moves[4 * i], moves[4 * i + 1], moves[4 * i + 2], moves[4 * i + 3]));
+    moves += 4 * lengths[k];
+  }
+}
+
+void probe_boards(int n, long evals, int batch, const uint64_t* bb, const uint8_t* side, const uint16_t* ply, int threads) {
+  omp_set_num_threads(threads);
+  P.s.assign(n, Search{});
+  P.count.assign(n, 0);
+  P.evals = evals;
+  P.batch = batch;
+  for (int k = 0; k < n; k++) {
+    Pos p{{bb[2 * k], bb[2 * k + 1]}, side[k], ply[k]};
+    History h;
+    h.reset(p);
+    P.s[k].reset(p, h);
+  }
+}
+
+float probe_root(int i, float* visits) {
+  const Search& s = P.s[i];
+  const Node& r = s.nodes[0];
+  std::fill(visits, visits + NMOVES, 0.f);
+  for (int j = 0; j < r.n; j++) visits[s.edges[r.edge + j].move] = s.childVisits(j);
+  return r.proven ? r.pv : r.sum / r.visits;
+}
+
+int probe_collect(float* feat) {
+  int n = P.s.size(), total = 0;
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int i = 0; i < n; i++) {
+    Search& s = P.s[i];
+    P.count[i] = 0;
+    while (!s.nodes[0].proven && s.evals < P.evals && !P.count[i]) P.count[i] = s.gather(feat + (long)i * P.batch * PLANES * SQ, s.nodes[0].expanded ? P.batch : 1);
+  }
+  for (int i = 0; i < n; i++) {
+    std::copy(feat + (long)i * P.batch * PLANES * SQ, feat + ((long)i * P.batch + P.count[i]) * PLANES * SQ, feat + (long)total * PLANES * SQ);
+    total += P.count[i];
+  }
+  return total;
+}
+
+void probe_feed(const float* policy, const float* value) {
+  int n = P.s.size();
+  std::vector<int> first(n + 1, 0);
+  for (int i = 0; i < n; i++) first[i + 1] = first[i] + P.count[i];
+#pragma omp parallel for schedule(dynamic, 1)
+  for (int i = 0; i < n; i++)
+    for (int j = 0; j < P.count[i]; j++) P.s[i].resolve(j, policy + (long)(first[i] + j) * NMOVES, value + (long)(first[i] + j) * 4);
+}
+
+int probe_result(int i, int* moves, float* visits, float* q, float* prior) {
+  const Search& s = P.s[i];
+  const Node& r = s.nodes[0];
+  for (int j = 0; j < r.n; j++) {
+    const Edge& e = s.edges[r.edge + j];
+    Coord c = toCoord(s.root, e.move);
+    int v[4] = {c.x0, c.y0, c.x1, c.y1};
+    std::copy(v, v + 4, moves + 4 * j);
+    visits[j] = s.childVisits(j);
+    q[j] = s.q(r, e, -2);
+    prior[j] = e.prior;
+  }
+  return r.n;
 }
 
 void arena_scores(float* out) {
