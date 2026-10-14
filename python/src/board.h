@@ -51,7 +51,7 @@ ATAXX_HD inline u64 dilate2(u64 b) { return dilate1(dilate1(b)); }
 ATAXX_HD inline bool onBoard(int x, int y) { return x >= 0 && x < 7 && y >= 0 && y < 7; }
 
 struct Tables {
-  u64 ring1[SQ];
+  u64 ring1[SQ], ring2[SQ];
   int jumpOrigin[SQ][16];
   int kindOf[5][5];
   int symSq[8][SQ], symKind[8][KINDS];
@@ -93,6 +93,7 @@ struct Tables {
     for (int s = 0; s < SQ; s++) {
       u64 b = 1ULL << bitOfSq(s);
       ring1[s] = dilate1(b) & ~b;
+      ring2[s] = dilate2(b) & ~dilate1(b);
       for (int k = 0; k < 16; k++) {
         int x = s % 7 - DX[k], y = s / 7 - DY[k];
         jumpOrigin[s][k] = onBoard(x, y) ? bitOf(x, y) : -1;
@@ -151,16 +152,15 @@ ATAXX_HD inline Pos start() {
 }
 
 ATAXX_HD inline int genGeometric(const Pos& p, Move* out) {
-  constexpr int dx[16] = {-2, -1, 0, 1, 2, -2, 2, -2, 2, -2, 2, -2, -1, 0, 1, 2};
-  constexpr int dy[16] = {-2, -2, -2, -2, -2, -1, -1, 0, 0, 1, 1, 2, 2, 2, 2, 2};
   u64 own = p.bb[p.side], empty = ON & ~(p.bb[0] | p.bb[1]);
   int n = 0;
   for (u64 c = dilate1(own) & empty; c; c &= c - 1) out[n++] = sqOfBit(lsb(c));
   for (u64 o = own; o; o &= o - 1) {
     int ob = lsb(o), ox = ob & 7, oy = ob >> 3;
-    for (int k = 0; k < 16; k++) {
-      int x = ox + dx[k], y = oy + dy[k];
-      if (onBoard(x, y) && (empty >> bitOf(x, y) & 1)) out[n++] = (k + 1) * SQ + sqOf(x, y);
+    for (u64 targets = T().ring2[sqOfBit(ob)] & empty; targets; targets &= targets - 1) {
+      int target = lsb(targets);
+      int kind = T().kindOf[(target & 7) - ox + 2][(target >> 3) - oy + 2];
+      out[n++] = kind * SQ + sqOfBit(target);
     }
   }
   return n;
