@@ -86,39 +86,46 @@ ATAXX_HD inline void patternCodes(u64 own, u64 opp, int* codes) {
             codes[y * 7 + x] = rows[y][x] + 27 * rows[y + 1][x] + 729 * rows[y + 2][x];
 }
 
+ATAXX_HD inline u64 transposeBoard(u64 b) {
+    u64 t = (b ^ (b >> 7)) & 0x00aa00aa00aa00aaULL;
+    b ^= t ^ (t << 7);
+    t = (b ^ (b >> 14)) & 0x0000cccc0000ccccULL;
+    b ^= t ^ (t << 14);
+    t = (b ^ (b >> 28)) & 0x00000000f0f0f0f0ULL;
+    return b ^ t ^ (t << 28);
+}
+
 ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
     int phase = popcnt(empty);
-    const int ternary[8] = {0, 1, 3, 4, 9, 10, 12, 13};
-    int rows[9][7]{};
-    int score = w.tempo[phase], columns[7]{}, rowCodes[7], power = 1;
-    for (int y = 0; y < 7; ++y, power *= 3) {
+    u64 rows[9][2]{};
+    int score = w.tempo[phase], columns[7], rowCodes[7];
+    u64 ownT = transposeBoard(own), oppT = transposeBoard(opp);
+    for (int y = 0; y < 7; ++y) {
         int a = (own >> (8 * y)) & 127, b = (opp >> (8 * y)) & 127;
         rowCodes[y] = T().ternaryRow[a] + 2 * T().ternaryRow[b];
         score += w.line[phase][std::min(y, 6 - y)][T().lineOrbit[rowCodes[y]]];
-        for (int x = 0; x < 7; ++x) {
-            int aa = (x ? a >> (x - 1) : a << 1) & 7;
-            int bb = (x ? b >> (x - 1) : b << 1) & 7;
-            rows[y + 1][x] = ternary[aa] + 2 * ternary[bb];
-            columns[x] += (((a >> x) & 1) + 2 * ((b >> x) & 1)) * power;
-            score += w.square[phase][y * 7 + x] * (((a >> x) & 1) - ((b >> x) & 1));
-        }
+        for (int j = 0; j < 2; ++j) rows[y + 1][j] = T().neighborRow[a][j] + 2 * T().neighborRow[b][j];
+        columns[y] = T().ternaryRow[(ownT >> (8 * y)) & 127] + 2 * T().ternaryRow[(oppT >> (8 * y)) & 127];
     }
-    for (int y = 0; y < 7; ++y)
-        for (int x = 0; x < 7; ++x) {
-            score += w.table[phase][rows[y][x] + 27 * rows[y + 1][x] + 729 * rows[y + 2][x]];
-        }
+    for (int y = 0; y < 7; ++y) {
+        u64 a = rows[y][0] + 27 * rows[y + 1][0] + 729 * rows[y + 2][0];
+        u64 b = rows[y][1] + 27 * rows[y + 1][1] + 729 * rows[y + 2][1];
+        for (int x = 0; x < 4; ++x) score += w.table[phase][(a >> (16 * x)) & 65535];
+        for (int x = 0; x < 3; ++x) score += w.table[phase][(b >> (16 * x)) & 65535];
+    }
     for (int x = 0; x < 7; ++x) score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
     for (int band = 0; band < 3; ++band) {
         int outside[4] = {rowCodes[band], columns[6 - band], rowCodes[6 - band], columns[band]};
         int inside[4] = {rowCodes[band + 1], columns[5 - band], rowCodes[5 - band], columns[band + 1]};
-        for (int side = 0; side < 4; ++side)
-            for (int j = 0; j < 4; ++j) {
-                score += w.edge[phase][band][outside[side] % 81 + 81 * (inside[side] % 81)];
-                outside[side] /= 3;
-                inside[side] /= 3;
-            }
+        for (int side = 0; side < 4; ++side) {
+            u64 codes = T().stripRow[outside[side]] + 81 * T().stripRow[inside[side]];
+            for (int j = 0; j < 4; ++j) score += w.edge[phase][band][(codes >> (16 * j)) & 65535];
+        }
     }
+    const u64 masks[10] = {0x41000000000041ULL, 0x22410000004122ULL, 0x14004100410014ULL, 0x8000041000008ULL, 0x220000002200ULL, 0x142200221400ULL, 0x80022000800ULL, 0x1400140000ULL, 0x814080000ULL, 0x8000000ULL};
+    const int representatives[10] = {0, 1, 2, 3, 8, 9, 10, 16, 17, 24};
+    for (int i = 0; i < 10; ++i) score += w.square[phase][representatives[i]] * (popcnt(own & masks[i]) - popcnt(opp & masks[i]));
     u64 frontier = dilate1(empty);
     score += w.linear[phase][0] * (popcnt(own) - popcnt(opp));
     score += w.linear[phase][1] * (popcnt(dilate1(own) & empty) - popcnt(dilate1(opp) & empty));

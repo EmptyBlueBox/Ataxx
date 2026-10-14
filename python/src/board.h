@@ -51,7 +51,7 @@ ATAXX_HD inline u64 dilate2(u64 b) { return dilate1(dilate1(b)); }
 ATAXX_HD inline bool onBoard(int x, int y) { return x >= 0 && x < 7 && y >= 0 && y < 7; }
 
 struct Tables {
-  u64 ring1[SQ], ring2[SQ];
+  u64 ring1[SQ], ring2[SQ], neighborRow[128][2]{}, stripRow[2187]{};
   int jumpOrigin[SQ][16];
   int kindOf[5][5];
   int symSq[8][SQ], symKind[8][KINDS];
@@ -63,6 +63,11 @@ struct Tables {
       int value = 0, power = 1;
       for (int i = 0; i < 7; ++i, power *= 3) value += ((bits >> i) & 1) * power;
       ternaryRow[bits] = value;
+      for (int x = 0; x < 7; ++x) {
+        int cells = (x ? bits >> (x - 1) : bits << 1) & 7;
+        int code = (cells & 1) + 3 * ((cells >> 1) & 1) + 9 * ((cells >> 2) & 1);
+        neighborRow[bits][x & 1] |= u64(code) << (16 * (x / 2));
+      }
     }
     const int power[9] = {1, 3, 9, 27, 81, 243, 729, 2187, 6561};
     for (int t = 0; t < 8; ++t)
@@ -80,6 +85,7 @@ struct Tables {
       }
     int lines = 0;
     for (int code = 0; code < 2187; ++code) {
+      for (int j = 0, value = code; j < 4; ++j, value /= 3) stripRow[code] |= u64(value % 81) << (16 * j);
       int value = code, reverse = 0;
       for (int i = 0; i < 7; ++i) { reverse = 3 * reverse + value % 3; value /= 3; }
       lineOrbit[code] = code <= reverse ? lines++ : lineOrbit[reverse];
