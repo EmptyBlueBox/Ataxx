@@ -215,7 +215,7 @@ def main():
 #include "board.h"
 namespace ataxx {
 template<int N> struct PatternWeightsBase {
-std::int16_t table[N][10][19683], square[N][49], linear[N][4], tempo[N], line[N][4][1134], edge[N][3][6561];
+std::int16_t table[N][6][19683], square[N][49], linear[N][4], tempo[N], line[N][4][1134], edge[N][6][6561];
 };
 using PatternWeights = PatternWeightsBase<46>;
 struct PackedPatternWeights {
@@ -247,7 +247,7 @@ inline const PatternWeights& patternWeights() {
                 const auto* b = reinterpret_cast<const std::int16_t*>(&source[lo + 1]);
                 for (unsigned k = 0; k < sizeof(source[0]) / sizeof(std::int16_t); ++k) {
                     int value = (den - num) * a[k] + num * b[k];
-                    to[k] = value >= 0 ? (value + den / 2) / den : -((-value + den / 2) / den);
+                    to[k] = 2 * (value >= 0 ? (value + den / 2) / den : -((-value + den / 2) / den));
                 }
             }
         };
@@ -269,17 +269,36 @@ inline const PatternWeights& patternWeights() {
             int lo = 0;
             while (lo < 4 && knots[lo + 1] <= e) ++lo;
             int den = knots[lo + 1] - knots[lo], num = e - knots[lo];
-            for (int r = 0; r < 10; ++r) for (int code = 0; code < 19683; ++code) {
+            auto interpolate = [&](int a, int b) {
+                int value = (den - num) * a + num * b;
+                return value >= 0 ? (value + den / 2) / den : -((-value + den / 2) / den);
+            };
+            auto local = [&](int r, int code) {
                 int k = index[r * 19683 + code];
-                int value = k < 0 ? 0 : (den - num) * packed.table[lo][k] + num * packed.table[lo + 1][k];
-                result.table[e][r][code] = value >= 0 ? (value + den / 2) / den : -((-value + den / 2) / den);
+                return k < 0 ? 0 : interpolate(packed.table[lo][k], packed.table[lo + 1][k]);
+            };
+            for (int r = 4; r < 10; ++r) for (int code = 0; code < 19683; ++code)
+                result.table[e][r - 4][code] = 2 * local(r, code);
+            for (int code = 0; code < 6561; ++code) {
+                int d[8], value = code;
+                for (int j = 0; j < 8; ++j, value /= 3) d[j] = value % 3;
+                int one = 27*d[0]+81*d[1]+243*d[2]+729*d[4]+2187*d[5]+6561*d[6];
+                int two = 27*d[1]+81*d[2]+243*d[3]+729*d[5]+2187*d[6]+6561*d[7];
+                int corner = 81*d[0]+243*d[1]+2187*d[4]+6561*d[5];
+                int edge = 2 * interpolate(packed.edge[lo][0][code], packed.edge[lo + 1][0][code]);
+                result.edge[e][0][code] = edge + 2*local(1, one) + 2*local(2, two) + local(0, corner);
+                result.edge[e][1][code] = edge + local(3, two);
+                int reverse = d[3]+3*d[2]+9*d[1]+27*d[0]+81*d[7]+243*d[6]+729*d[5]+2187*d[4];
+                result.edge[e][2][reverse] = result.edge[e][1][code];
+                result.edge[e][3][reverse] = result.edge[e][0][code];
+                for (int band = 1; band < 3; ++band)
+                    result.edge[e][band + 3][code] = 2 * interpolate(packed.edge[lo][band][code], packed.edge[lo + 1][band][code]);
             }
         }
         expand(result.square, packed.square);
         expand(result.linear, packed.linear);
         expand(result.tempo, packed.tempo);
         expand(result.line, packed.line);
-        expand(result.edge, packed.edge);
         return result;
     }();
     return weights;
@@ -296,8 +315,21 @@ inline const PatternWeights& patternWeights() {
         shape = (46,) + (1,) * (a.ndim - 1)
         num, den = numerator.reshape(shape), denominator.reshape(shape)
         value = (den - num) * a[lo].astype(np.int32) + num * a[lo + 1].astype(np.int32)
-        expanded.append((np.sign(value) * ((abs(value) + den // 2) // den)).astype("<i2").tobytes())
-    args.out.with_suffix(".bin").write_bytes(b"".join(expanded))
+        expanded.append(np.sign(value) * ((abs(value) + den // 2) // den))
+    table, square, linear, tempo, line, edge = expanded
+    digits = np.arange(6561)[:, None] // (3 ** np.arange(8)) % 3
+    reverse = digits.reshape(-1, 2, 4)[:, :, ::-1].reshape(-1, 8) @ (3 ** np.arange(8))
+    one = digits[:, [0, 1, 2, 4, 5, 6]] @ (3 ** np.arange(3, 9))
+    two = digits[:, [1, 2, 3, 5, 6, 7]] @ (3 ** np.arange(3, 9))
+    corner = digits[:, [0, 1, 4, 5]] @ (3 ** np.array([4, 5, 7, 8]))
+    strips = np.empty((46, 6, 6561), dtype=np.int32)
+    strips[:, 0] = 2 * edge[:, 0] + 2 * table[:, 1, one] + 2 * table[:, 2, two] + table[:, 0, corner]
+    strips[:, 1] = 2 * edge[:, 0] + table[:, 3, two]
+    strips[:, 2] = strips[:, 1, reverse]
+    strips[:, 3] = strips[:, 0, reverse]
+    strips[:, 4:] = 2 * edge[:, 1:]
+    expanded = [2 * table[:, 4:], 2 * square, 2 * linear, 2 * tempo, 2 * line, strips]
+    args.out.with_suffix(".bin").write_bytes(b"".join(a.astype("<i2").tobytes() for a in expanded))
     print(json.dumps(dict(scale=scale, bytes=args.out.stat().st_size)), flush=True)
 
 

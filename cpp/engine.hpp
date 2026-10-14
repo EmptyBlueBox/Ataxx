@@ -110,11 +110,11 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
         for (int j = 0; j < 2; ++j) rows[y + 1][j] = T().neighborRow[a][j] + 2 * T().neighborRow[b][j];
         columns[y] = T().ternaryRow[(ownT >> (8 * y)) & 127] + 2 * T().ternaryRow[(oppT >> (8 * y)) & 127];
     }
-    for (int y = 0; y < 7; ++y) {
+    for (int y = 1; y < 6; ++y) {
         u64 a = rows[y][0] + 27 * rows[y + 1][0] + 729 * rows[y + 2][0];
         u64 b = rows[y][1] + 27 * rows[y + 1][1] + 729 * rows[y + 2][1];
-        for (int x = 0; x < 4; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; score += w.table[phase][regions[s]][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
-        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; score += w.table[phase][regions[s]][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 1; x < 3; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
     }
     for (int x = 0; x < 7; ++x) score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
     for (int band = 0; band < 3; ++band) {
@@ -122,7 +122,7 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
         int inside[4] = {rowCodes[band + 1], columns[5 - band], rowCodes[5 - band], columns[band + 1]};
         for (int side = 0; side < 4; ++side) {
             u64 codes = T().stripRow[outside[side]] + 81 * T().stripRow[inside[side]];
-            for (int j = 0; j < 4; ++j) score += w.edge[phase][band][(codes >> (16 * j)) & 65535];
+            for (int j = 0; j < 4; ++j) score += w.edge[phase][band ? band + 3 : j][(codes >> (16 * j)) & 65535];
         }
     }
     const u64 masks[10] = {0x41000000000041ULL, 0x22410000004122ULL, 0x14004100410014ULL, 0x8000041000008ULL, 0x220000002200ULL, 0x142200221400ULL, 0x80022000800ULL, 0x1400140000ULL, 0x814080000ULL, 0x8000000ULL};
@@ -133,7 +133,7 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     score += w.linear[phase][1] * (popcnt(dilate1(own) & empty) - popcnt(dilate1(opp) & empty));
     score += w.linear[phase][2] * (popcnt(dilate2(own) & empty) - popcnt(dilate2(opp) & empty));
     score += w.linear[phase][3] * (popcnt(frontier & own) - popcnt(frontier & opp));
-    return score;
+    return score / 2;
 }
 struct Entry {
     u64 own = 0, opp = 0, context = 0;
