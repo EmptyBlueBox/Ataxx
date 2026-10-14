@@ -134,6 +134,11 @@ struct Entry {
     std::uint8_t age = 0;
 };
 
+struct EvalEntry {
+    u64 own = 0, opp = 0;
+    int score = 0;
+};
+
 struct SearchStats {
     std::uint64_t nodes = 0;
     int depth = 0, score = 0;
@@ -147,6 +152,7 @@ struct SearchCore {
         int scores[NMOVES];
     };
     Entry* table;
+    EvalEntry* evalTable;
     int tableBits = 21;
     bool legacy = false;
     const Weights* evalWeights = nullptr;
@@ -327,7 +333,15 @@ struct SearchCore {
             if (index < 4096) samples[index] = p;
             sampleCount = std::min(sampleSeen, std::uint64_t(4096));
         }
+#ifndef __CUDA_ARCH__
+        u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1];
+        EvalEntry& entry = evalTable[((own * 0x9e3779b97f4a7c15ULL ^ opp) * 0xbf58476d1ce4e5b9ULL) >> 46];
+        if (entry.own == own && entry.opp == opp) return entry.score;
+#endif
         int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns);
+#ifndef __CUDA_ARCH__
+        entry = {own, opp, score};
+#endif
         return score;
     }
     ATAXX_HD Move choose(const Pos& pos, const H& history, std::clock_t start, double seconds, std::uint64_t nodes = 0, int maxDepth = 64) {
@@ -368,6 +382,7 @@ struct SearchCore {
 
 class Search {
     std::vector<Entry> table = std::vector<Entry>(1 << 21);
+    std::vector<EvalEntry> evaluations = std::vector<EvalEntry>(1 << 18);
     std::vector<SearchCore<History>::Frame> frames = std::vector<SearchCore<History>::Frame>(66);
 public:
     SearchCore<History> core;
@@ -376,6 +391,7 @@ public:
         core.patterns = &patternWeights();
         core.directional = &directionalWeights;
         core.table = table.data();
+        core.evalTable = evaluations.data();
         core.frames = frames.data();
         core.init();
     }
