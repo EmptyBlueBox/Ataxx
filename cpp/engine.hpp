@@ -231,6 +231,7 @@ struct SearchCore {
             int alternative = negamax(p, (depth - 1) / 2, bound - 1, bound, false, false, preferred);
             if (stopped) return 0;
             if (alternative < bound) singularMove = preferred;
+            else if (!pv && bound >= beta && std::abs(alternative) < win) return alternative;
         }
         if (excluded != NMOVES) preferred = NMOVES;
         Frame& frame = frames[p.ply - rootPly];
