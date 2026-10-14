@@ -88,7 +88,7 @@ ATAXX_HD inline void patternCodes(u64 own, u64 opp, int* codes) {
 
 ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
-    int phase = popcnt(empty) * 6 / 50;
+    int phase = popcnt(empty);
     const int ternary[8] = {0, 1, 3, 4, 9, 10, 12, 13};
     int rows[9][7]{};
     int score = w.tempo[phase], columns[7]{}, rowCodes[7], power = 1;
@@ -168,7 +168,7 @@ struct SearchCore {
     H hist;
     std::uint8_t age = 0;
 
-    ATAXX_HD int negamax(const Pos& p, int depth, int alpha, int beta, bool allowNull = true, bool synthetic = false) {
+    ATAXX_HD int negamax(const Pos& p, int depth, int alpha, int beta, bool allowNull = true, bool synthetic = false, Move excluded = NMOVES) {
         ++statistics.nodes;
         if (nodeLimit && statistics.nodes > nodeLimit) stopped = true;
 #ifndef __CUDA_ARCH__
@@ -198,10 +198,10 @@ struct SearchCore {
         Entry& cached = table[(own * 0x9e3779b97f4a7c15ULL ^ opp) * 0xbf58476d1ce4e5b9ULL >> (64 - tableBits)];
         bool boardHit = cached.own == own && cached.opp == opp;
         bool hit = boardHit && (legacy || (!synthetic && cached.context == context));
-        if (hit && exact && !root && cached.depth >= depth
+        if (excluded == NMOVES && hit && exact && !root && cached.depth >= depth
             && (!cached.bound || (cached.bound > 0 && cached.score >= beta) || (cached.bound < 0 && cached.score <= alpha)))
             return cached.score;
-        if (!pv && beta < win && alpha > -win) {
+        if (excluded == NMOVES && !pv && beta < win && alpha > -win) {
             int standing = evaluate(p);
             if (depth <= 6 && standing - 120 * depth >= beta) return standing;
             if (allowNull && depth >= 3 && standing >= beta && popcnt(ON & ~(own | opp)) >= 10 && popcnt(own) >= 4 && popcnt(opp) >= 4) {
@@ -214,15 +214,26 @@ struct SearchCore {
             }
         }
         Move preferred = root ? rootBest : (legacy ? hit : boardHit) ? cached.move : NMOVES;
+        Move singularMove = NMOVES;
+        if (!legacy && excluded == NMOVES && !root && !synthetic && depth >= 8 && p.ply - rootPly + depth < 64 && hit && cached.bound >= 0 && cached.depth >= depth - 3 && std::abs(cached.score) < win && preferred != NMOVES) {
+            int bound = cached.score - 4 * depth;
+            int alternative = negamax(p, (depth - 1) / 2, bound - 1, bound, false, false, preferred);
+            if (stopped) return 0;
+            if (alternative < bound) singularMove = preferred;
+        }
+        if (excluded != NMOVES) preferred = NMOVES;
         Frame& frame = frames[p.ply - rootPly];
         int size = synthetic ? genGeometric(p, frame.moves) : genLegal(p, hist, frame.moves);
+        if (excluded != NMOVES)
+            for (int i = 0; i < size; ++i)
+                if (frame.moves[i] == excluded) frame.moves[i--] = frame.moves[--size];
         if (!size) return -win - 49;
         if (!legacy) {
             bool found = false;
             for (int i = 0; i < size; ++i) found |= frame.moves[i] == preferred;
             if (!found) preferred = NMOVES;
         }
-        if (preferred == NMOVES && depth >= 4) --depth;
+        if (excluded == NMOVES && preferred == NMOVES && depth >= 4) --depth;
         const Tables& t = T();
         int codes[SQ], phase = popcnt(ON & ~(own | opp)) * 6 / 50;
         int preferredIndex = -1;
@@ -273,13 +284,13 @@ struct SearchCore {
             int k = hist.ply();
             if (!legacy) contexts[k] = mix((move < SQ ? 0 : contexts[k - 1]) ^ hist.s[k].b[0], hist.s[k].b[1]);
             play(child, move);
-            int score;
-            if (!i || depth == 1) score = -negamax(child, depth - 1, -beta, -alpha, true, synthetic);
+            int score, nextDepth = depth - 1 + (move == singularMove);
+            if (!i || depth == 1) score = -negamax(child, nextDepth, -beta, -alpha, true, synthetic);
             else {
                 int reduction = depth >= 3 ? std::max(0, std::min(reductions[std::min(depth, 63)][std::min(i, 63)] - pv, depth - 2)) : 0;
-                score = -negamax(child, depth - 1 - reduction, -alpha - 1, -alpha, true, synthetic);
-                if (reduction && score > alpha) score = -negamax(child, depth - 1, -alpha - 1, -alpha, true, synthetic);
-                if (score > alpha && score < beta) score = -negamax(child, depth - 1, -beta, -alpha, true, synthetic);
+                score = -negamax(child, nextDepth - reduction, -alpha - 1, -alpha, true, synthetic);
+                if (reduction && score > alpha) score = -negamax(child, nextDepth, -alpha - 1, -alpha, true, synthetic);
+                if (score > alpha && score < beta) score = -negamax(child, nextDepth, -beta, -alpha, true, synthetic);
             }
             hist.pop();
             if (stopped) return 0;
@@ -299,7 +310,7 @@ struct SearchCore {
                 break;
             }
         }
-        if (!synthetic && (hit || cached.age != age || cached.depth <= depth + 2))
+        if (excluded == NMOVES && !synthetic && (hit || cached.age != age || cached.depth <= depth + 2))
             cached = {own, opp, context, best, bestMove, static_cast<std::int8_t>(exact ? depth : 0),
                 static_cast<std::int8_t>(best <= originalAlpha ? -1 : best >= beta ? 1 : 0), age};
         return best;
@@ -316,7 +327,8 @@ struct SearchCore {
             if (index < 4096) samples[index] = p;
             sampleCount = std::min(sampleSeen, std::uint64_t(4096));
         }
-        return legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns);
+        int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns);
+        return score;
     }
     ATAXX_HD Move choose(const Pos& pos, const H& history, std::clock_t start, double seconds, std::uint64_t nodes = 0, int maxDepth = 64) {
         statistics = {};
