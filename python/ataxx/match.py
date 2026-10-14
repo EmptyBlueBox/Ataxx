@@ -17,12 +17,10 @@ players = {}
 
 
 class Engine:
-    def __init__(self, binary, net, budget, seed, explore=0, share=1, symmetric=0, book=None):
+    def __init__(self, binary, net, budget, seed, explore=0, share=1, symmetric=0):
         self.unit, self.budget = ("time", float(budget[:-1])) if budget.endswith("s") else ("evals", int(budget))
         self.proc = subprocess.Popen([binary, net], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.send(f"explore {explore} {share} {seed} {symmetric}")
-        if book:
-            self.send(f"book {book}")
 
     def close(self):
         self.send("quit")

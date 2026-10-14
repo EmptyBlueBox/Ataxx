@@ -1,14 +1,12 @@
 #include <array>
 #include <cstdio>
 #include <ctime>
-#include <fstream>
 #include <iostream>
-#include <map>
 #include <random>
 #include <sstream>
 #include <string>
 #include "judge_ref.h"
-#include "net.h"
+#include "tf.h"
 #include "search.h"
 
 using namespace ataxx;
@@ -20,7 +18,7 @@ static double cpu() {
 }
 
 struct Engine {
-  Net net;
+  Transformer net;
   Search s;
   std::vector<std::array<int, 4>> log;
   long evals = 0, sims = 0;
@@ -29,25 +27,9 @@ struct Engine {
   float exploreShare = 1;
   std::mt19937_64 rng;
 
-  std::map<std::string, std::array<int, 4>> book;
-
   explicit Engine(const char* path) : net(path) {
     s.cacheLimit = 200000;
     reset();
-  }
-
-  void load(const char* path) {
-    std::ifstream in(path);
-    std::string key;
-    std::array<int, 4> m;
-    while (in >> key >> m[0] >> m[1] >> m[2] >> m[3]) book[key] = m;
-  }
-
-  std::string key() const {
-    std::string k = "-";
-    for (auto& m : log)
-      for (int v : m) k += char('0' + v);
-    return k;
   }
 
   void reset() {
@@ -76,10 +58,7 @@ struct Engine {
     int n = genLegal(s.root, s.hist, mv);
     evals = sims = 0;
     Move chosen = mv[0];
-    auto hit = book.find(key());
-    if (hit != book.end()) {
-      chosen = fromCoord(hit->second[0], hit->second[1], hit->second[2], hit->second[3]);
-    } else if (n > 1) {
+    if (n > 1) {
       while (!s.nodes[0].proven && evals < maxEvals && sims < 64 * maxEvals && cpu() < deadline) {
         sims++;
         if (s.select(feat)) {
@@ -155,7 +134,6 @@ static void botzone(Engine& e, double firstBudget, double turnBudget) {
 int main(int argc, char** argv) {
   Engine e(argv[1]);
   if (argc > 2 && std::string(argv[2]) == "botzone") {
-    if (argc > 5) e.load(argv[5]);
     botzone(e, std::stod(argv[3]), std::stod(argv[4]));
     return 0;
   }
@@ -196,10 +174,6 @@ int main(int argc, char** argv) {
       double began = cpu();
       for (int i = 0; i < n; i++) e.net.eval(feat, policy, value);
       printf("%.4f\n", (cpu() - began) * 1000 / n);
-    } else if (cmd == "book") {
-      std::string path;
-      in >> path;
-      e.load(path.c_str());
     } else if (cmd == "explore") {
       unsigned long seed;
       in >> e.explorePlies >> e.exploreShare >> seed >> e.symmetric;

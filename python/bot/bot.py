@@ -1,8 +1,40 @@
+import json
 import os
+import subprocess
+import sys
+import time
 
-runtime = "data/Ataxx/rt-@@RT@@"
 version = "data/Ataxx/v-@@V@@"
-loader = runtime + "/ld-linux-x86-64.so.2"
-os.chmod(loader, 0o755)
 os.chmod(version + "/engine", 0o755)
-os.execv(loader, [loader, "--library-path", runtime, version + "/engine", version + "/net.onnx", "botzone", "11.1", "3.7", version + "/book.txt"])
+
+
+def start(first, env=None):
+    command = [version + "/engine", version + "/net.bin", "botzone", str(first), "3.85"]
+    return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, bufsize=1, env=env)
+
+
+def ask(engine, line):
+    try:
+        engine.stdin.write(line)
+        engine.stdin.flush()
+        return engine.stdout.readline(), engine.stdout.readline()
+    except IOError:
+        return "", ""
+
+
+engine = start(11.6)
+history = None
+for line in sys.stdin:
+    began = time.time()
+    limit = 4.0 if history else 12.0
+    if history:
+        history["requests"].append(json.loads(line))
+    else:
+        history = json.loads(line)
+    answer, marker = ask(engine, line)
+    if not marker:
+        engine = start(max(0.2, limit - (time.time() - began) - 1.0), dict(os.environ, ATAXX_NOVNNI="1"))
+        answer, marker = ask(engine, json.dumps(history) + "\n")
+    history["responses"].append(json.loads(answer)["response"])
+    sys.stdout.write(answer + marker)
+    sys.stdout.flush()
