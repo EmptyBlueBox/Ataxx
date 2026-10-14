@@ -171,6 +171,11 @@ inline const ExpandedDirectionalWeights& expandedDirectionalWeights() {
     return weights;
 }
 
+struct OrderTree {
+    int size;
+    std::int64_t values[2048];
+};
+
 template<class H>
 struct SearchCore {
     struct Frame {
@@ -187,6 +192,7 @@ struct SearchCore {
     const ExpandedDirectionalWeights* expandedDirectional = nullptr;
     std::uint64_t nodeLimit = 0;
     Frame* frames;
+    OrderTree* orders = nullptr;
     Pos* samples = nullptr;
     int sampleCount = 0;
     std::uint64_t sampleSeen = 0;
@@ -275,6 +281,9 @@ struct SearchCore {
             frame.scores[i] = cutoffs[frame.moves[i]];
             if (frame.moves[i] == preferred) preferredIndex = i;
         }
+#ifndef __CUDA_ARCH__
+        OrderTree& order = orders[p.ply - rootPly];
+#endif
         bool ordered = false;
         int originalAlpha = alpha, best = -infinity;
         Move bestMove = preferred;
@@ -308,9 +317,20 @@ struct SearchCore {
                         if (move == frame.killer) score += 400;
                         frame.scores[j] = score;
                     }
+#ifndef __CUDA_ARCH__
+                    order.size = 1;
+                    while (order.size < size) order.size *= 2;
+                    for (int j = 0; j < order.size; ++j)
+                        order.values[order.size + j] = j >= i && j < size ? std::int64_t(frame.scores[j]) * 1024 + 1023 - j : -(1LL << 60);
+                    for (int j = order.size - 1; j; --j) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
+#endif
                     ordered = true;
                 }
+#ifdef __CUDA_ARCH__
                 for (int j = i + 1; j < size; ++j) if (frame.scores[j] > frame.scores[next]) next = j;
+#else
+                next = 1023 - int(order.values[1] & 1023);
+#endif
             }
             int savedScore = frame.scores[i];
             frame.scores[i] = frame.scores[next];
@@ -318,6 +338,14 @@ struct SearchCore {
             Move savedMove = frame.moves[i];
             frame.moves[i] = frame.moves[next];
             frame.moves[next] = savedMove;
+#ifndef __CUDA_ARCH__
+            if (ordered) {
+                order.values[order.size + next] = std::int64_t(frame.scores[next]) * 1024 + 1023 - next;
+                order.values[order.size + i] = -(1LL << 60);
+                for (int j = (order.size + i) / 2; j; j /= 2) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
+                for (int j = (order.size + next) / 2; j; j /= 2) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
+            }
+#endif
             Move move = frame.moves[i];
             if (!pv && depth <= 2 && i >= 6 * depth && best > -win) break;
             Pos child = p;
@@ -419,6 +447,7 @@ class Search {
     std::vector<Entry> table = std::vector<Entry>(1 << 21);
     std::vector<EvalEntry> evaluations = std::vector<EvalEntry>(1 << 18);
     std::vector<SearchCore<History>::Frame> frames = std::vector<SearchCore<History>::Frame>(66);
+    std::vector<OrderTree> orders = std::vector<OrderTree>(66);
 public:
     SearchCore<History> core;
     Search() {
@@ -429,6 +458,7 @@ public:
         core.table = table.data();
         core.evalTable = evaluations.data();
         core.frames = frames.data();
+        core.orders = orders.data();
         core.init();
     }
     const SearchStats& stats() const { return core.statistics; }
