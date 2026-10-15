@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <setjmp.h>
+#include <signal.h>
 #include <vector>
 #include "board.h"
 
@@ -118,18 +120,40 @@ struct Dense {
 };
 
 inline int VNNI = 0;
+inline sigjmp_buf vnniJump;
+
+inline void vnniSignal(int) { siglongjmp(vnniJump, 1); }
+
+__attribute__((target("avx2,avx512f,avx512vl"), noinline)) inline int vnniInstruction() {
+  __m256i a = _mm256_setzero_si256(), u = _mm256_set1_epi8(1), m = _mm256_set1_epi8(2);
+  __asm__ volatile("%{evex%} vpdpbusd %2, %1, %0" : "+x"(a) : "x"(u), "x"(m));
+  return _mm256_extract_epi32(a, 0);
+}
+
+inline bool vnniProbe() {
+  struct sigaction action{}, previous;
+  action.sa_handler = vnniSignal;
+  sigemptyset(&action.sa_mask);
+  sigaction(SIGILL, &action, &previous);
+  volatile bool supported = false;
+  if (!sigsetjmp(vnniJump, 1)) supported = vnniInstruction() == 8;
+  sigaction(SIGILL, &previous, nullptr);
+  return supported;
+}
 
 inline int vnni() {
-  unsigned a, b, c, d;
-  __cpuid(1, a, b, c, d);
-  if (!(c >> 27 & 1)) return 0;
-  unsigned lo, hi;
-  __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-  int model = (a >> 4 & 15) | (a >> 12 & 0xf0);
-  __cpuid_count(7, 0, a, b, c, d);
-  if ((lo & 0xe6) == 0xe6 && ((c >> 11 & 1) || model == 106)) return 2;
-  __cpuid_count(7, 1, a, b, c, d);
-  return a >> 4 & 1;
+  static const int level = []() -> int {
+    unsigned a, b, c, d;
+    __cpuid(1, a, b, c, d);
+    if (!(c >> 27 & 1)) return 0;
+    unsigned lo, hi;
+    __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    __cpuid_count(7, 0, a, b, c, d);
+    if ((lo & 0xe6) == 0xe6 && ((c >> 11 & 1) || vnniProbe())) return 2;
+    __cpuid_count(7, 1, a, b, c, d);
+    return a >> 4 & 1;
+  }();
+  return level;
 }
 
 struct Dense8 {

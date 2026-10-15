@@ -145,8 +145,34 @@ static void botzone(Engine& e, double firstBudget, double turnBudget) {
   }
 }
 
+static void simplebotzone(Engine& e, double firstBudget, double turnBudget) {
+  int turns, x0, y0, x1, y1;
+  std::cin >> turns;
+  for (int i = 0; i < 2 * turns - 1; ++i) {
+    std::cin >> x0 >> y0 >> x1 >> y1;
+    if (x0 >= 0) e.apply(x0, y0, x1, y1);
+  }
+  double began = 0;
+  bool first = true;
+  for (;;) {
+    Coord c = e.go(1L << 40, began + (first ? firstBudget : turnBudget));
+    e.apply(c.x0, c.y0, c.x1, c.y1);
+    printf("%d %d %d %d\ne%ld s%ld q%.3f t%.0f k%d\n\n\n>>>BOTZONE_REQUEST_KEEP_RUNNING<<<\n", c.x0, c.y0, c.x1, c.y1, e.evals, e.sims, e.rootQ(), (cpu() - began) * 1000, VNNI);
+    fflush(stdout);
+    if (!(std::cin >> x0 >> y0 >> x1 >> y1)) break;
+    began = cpu();
+    first = false;
+    e.apply(x0, y0, x1, y1);
+  }
+}
+
 int main(int argc, char** argv) {
   Engine e(argv[1], argc > 5 ? std::vector<std::string>(argv + 5, argv + argc) : std::vector<std::string>{});
+  if (argc > 2 && std::string(argv[2]) == "simpleio") {
+    e.s.cacheLimit = 65536;
+    simplebotzone(e, std::stod(argv[3]), std::stod(argv[4]));
+    return 0;
+  }
   if (argc > 2 && std::string(argv[2]) == "botzone") {
     botzone(e, std::stod(argv[3]), std::stod(argv[4]));
     return 0;
