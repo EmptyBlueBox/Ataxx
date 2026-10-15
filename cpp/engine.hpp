@@ -95,7 +95,34 @@ ATAXX_HD inline u64 transposeBoard(u64 b) {
     return b ^ t ^ (t << 28);
 }
 
-ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
+struct ExpandedPatternWeights {
+    const PatternWeights* source;
+    std::int16_t table[46][25][19683], line[46][4][2187];
+};
+
+inline const ExpandedPatternWeights& expandedPatternWeights() {
+    static const auto* weights = [] {
+        auto* result = new ExpandedPatternWeights;
+        const auto& w = patternWeights();
+        result->source = &w;
+        const auto& t = T();
+        const int regions[25] = {0,1,2,1,0,1,3,4,3,1,2,4,5,4,2,1,3,4,3,1,0,1,2,1,0};
+        const int transforms[25] = {0,0,0,1,1,4,0,0,1,5,4,4,0,5,5,6,2,2,3,7,2,2,2,3,3};
+        for (int phase = 0; phase < 46; ++phase) {
+            for (int square = 0; square < 25; ++square)
+                for (int code = 0; code < 19683; ++code)
+                    result->table[phase][square][code] = w.table[phase][regions[square]][t.patternSym[transforms[square]][code]];
+            for (int region = 0; region < 4; ++region)
+                for (int code = 0; code < 2187; ++code)
+                    result->line[phase][region][code] = w.line[phase][region][t.lineOrbit[code]];
+        }
+        return result;
+    }();
+    return *weights;
+}
+
+template<bool Expanded = false>
+ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const ExpandedPatternWeights* expanded = nullptr) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
     int phase = popcnt(empty);
     constexpr int regions[49] = {0, 1, 2, 3, 2, 1, 0, 1, 4, 5, 6, 5, 4, 1, 2, 5, 7, 8, 7, 5, 2, 3, 6, 8, 9, 8, 6, 3, 2, 5, 7, 8, 7, 5, 2, 1, 4, 5, 6, 5, 4, 1, 0, 1, 2, 3, 2, 1, 0};
@@ -106,17 +133,21 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w) {
     for (int y = 0; y < 7; ++y) {
         int a = (own >> (8 * y)) & 127, b = (opp >> (8 * y)) & 127;
         rowCodes[y] = T().ternaryRow[a] + 2 * T().ternaryRow[b];
-        score += w.line[phase][std::min(y, 6 - y)][T().lineOrbit[rowCodes[y]]];
+        if constexpr (Expanded) score += expanded->line[phase][std::min(y, 6 - y)][rowCodes[y]];
+        else score += w.line[phase][std::min(y, 6 - y)][T().lineOrbit[rowCodes[y]]];
         for (int j = 0; j < 2; ++j) rows[y + 1][j] = T().neighborRow[a][j] + 2 * T().neighborRow[b][j];
         columns[y] = T().ternaryRow[(ownT >> (8 * y)) & 127] + 2 * T().ternaryRow[(oppT >> (8 * y)) & 127];
     }
     for (int y = 1; y < 6; ++y) {
         u64 a = rows[y][0] + 27 * rows[y + 1][0] + 729 * rows[y + 2][0];
         u64 b = rows[y][1] + 27 * rows[y + 1][1] + 729 * rows[y + 2][1];
-        for (int x = 1; x < 3; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
-        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 1; x < 3; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; if constexpr (Expanded) score += expanded->table[phase][5 * (y - 1) + 2 * x - 1][code]; else score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; if constexpr (Expanded) score += expanded->table[phase][5 * (y - 1) + 2 * x][code]; else score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
     }
-    for (int x = 0; x < 7; ++x) score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
+    for (int x = 0; x < 7; ++x) {
+        if constexpr (Expanded) score += expanded->line[phase][std::min(x, 6 - x)][columns[x]];
+        else score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
+    }
     for (int band = 0; band < 3; ++band) {
         int outside[4] = {rowCodes[band], columns[6 - band], rowCodes[6 - band], columns[band]};
         int inside[4] = {rowCodes[band + 1], columns[5 - band], rowCodes[5 - band], columns[band + 1]};
@@ -188,6 +219,7 @@ struct SearchCore {
     bool legacy = false;
     const Weights* evalWeights = nullptr;
     const PatternWeights* patterns = nullptr;
+    const ExpandedPatternWeights* expandedPatterns = nullptr;
     const DirectionalWeights* directional = nullptr;
     const ExpandedDirectionalWeights* expandedDirectional = nullptr;
     std::uint64_t nodeLimit = 0;
@@ -401,7 +433,11 @@ struct SearchCore {
         EvalEntry& entry = evalTable[((own * 0x9e3779b97f4a7c15ULL ^ opp) * 0xbf58476d1ce4e5b9ULL) >> 46];
         if (entry.own == own && entry.opp == opp) return entry.score;
 #endif
+#ifdef __CUDA_ARCH__
         int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns);
+#else
+        int score = legacy ? tableEvaluate(p, evalWeights) : expandedPatterns && expandedPatterns->source == patterns ? patternEvaluate<true>(p, *patterns, expandedPatterns) : patternEvaluate(p, *patterns);
+#endif
 #ifndef __CUDA_ARCH__
         entry = {own, opp, score};
 #endif
@@ -453,6 +489,7 @@ public:
     Search() {
         core.evalWeights = weights;
         core.patterns = &patternWeights();
+        core.expandedPatterns = &expandedPatternWeights();
         core.directional = &directionalWeights;
         core.expandedDirectional = &expandedDirectionalWeights();
         core.table = table.data();
