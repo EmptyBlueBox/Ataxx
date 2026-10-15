@@ -11,6 +11,19 @@ from ataxx.match import ROOT, summary
 from ataxx.selfplay import NMOVES, library
 
 
+def evaluate(net, phases, x, covered):
+    policy, value = (None, None) if covered else net(x)
+    empty = x[:, 2].sum((1, 2)).round()
+    for extra, lo, hi in phases:
+        m = (empty >= lo) & (empty < hi)
+        if m.any():
+            p, v = extra(x[m])
+            if policy is None:
+                policy, value = p.new_empty((len(x), NMOVES)), v.new_empty((len(x), 4))
+            policy[m], value[m] = p, v
+    return policy, value
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--a", required=True)
@@ -34,6 +47,7 @@ def main():
     nets = [Teacher(path).net if path.endswith(".onnx") else model.load(path, "cuda").to(memory_format=torch.channels_last) for path in (args.a, args.b)]
     load = lambda spec: (model.load(spec.split(":")[0], "cuda").to(memory_format=torch.channels_last), *map(int, spec.split(":")[1:]))
     phases = [[load(spec) for spec in args.phase_a], [load(spec) for spec in args.phase_b]]
+    covered = [all(any(lo <= e < hi for _, lo, hi in bank) for e in range(50)) for bank in phases]
     feats = [torch.zeros(n, model.PLANES, 7, 7).pin_memory() for _ in nets]
     counts, scores = np.zeros(2, np.int32), np.zeros(n, np.float32)
     book = json.load(open(args.openings))
@@ -52,12 +66,7 @@ def main():
                 continue
             with torch.autocast("cuda", torch.float16), torch.no_grad():
                 x = feat[:count].cuda().contiguous(memory_format=torch.channels_last)
-                policy, value = net(x)
-                empty = x[:, 2].sum((1, 2)).round()
-                for extra, lo, hi in phases[k]:
-                    m = (empty >= lo) & (empty < hi)
-                    if m.any():
-                        policy[m], value[m] = extra(x[m])
+                policy, value = evaluate(net, phases[k], x, covered[k])
             outputs += [np.ascontiguousarray(policy.float().cpu().numpy()), np.ascontiguousarray(value.float().cpu().numpy())]
         lib.arena_feed(*(o.ctypes.data for o in outputs))
     lib.arena_scores(scores.ctypes.data)
