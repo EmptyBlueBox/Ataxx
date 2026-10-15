@@ -17,9 +17,14 @@ static double cpu() {
   return t.tv_sec + t.tv_nsec * 1e-9;
 }
 
+struct Phase {
+  Transformer* net;
+  int lo, hi;
+};
+
 struct Engine {
   Transformer net;
-  Transformer* late = nullptr;
+  std::vector<Phase> phases;
   Search s;
   std::vector<std::array<int, 4>> log;
   long evals = 0, sims = 0;
@@ -28,8 +33,11 @@ struct Engine {
   float exploreShare = 1;
   std::mt19937_64 rng;
 
-  explicit Engine(const char* path, const char* latePath = nullptr) : net(path) {
-    if (latePath) late = new Transformer(latePath);
+  explicit Engine(const char* path, const std::vector<std::string>& specs = {}) : net(path) {
+    for (const std::string& spec : specs) {
+      size_t a = spec.find(':'), b = spec.find(':', a + 1);
+      phases.push_back({new Transformer(spec.substr(0, a).c_str()), std::stoi(spec.substr(a + 1, b - a - 1)), std::stoi(spec.substr(b + 1))});
+    }
     s.cacheLimit = 200000;
     reset();
   }
@@ -64,15 +72,18 @@ struct Engine {
       while (!s.nodes[0].proven && evals < maxEvals && sims < 64 * maxEvals && cpu() < deadline) {
         sims++;
         if (s.select(feat)) {
-          Transformer& t0 = late && popcnt(ON & ~(s.leaf.bb[0] | s.leaf.bb[1])) < 15 ? *late : net;
+          int empty = popcnt(ON & ~(s.leaf.bb[0] | s.leaf.bb[1]));
+          Transformer* t0 = &net;
+          for (Phase& p : phases)
+            if (empty >= p.lo && empty < p.hi) t0 = p.net;
           if (symmetric) {
             int t = rng() % 8;
             float raw[NMOVES];
             encode(Pos{{transform(s.leaf.bb[0], t), transform(s.leaf.bb[1], t)}, s.leaf.side, s.leaf.ply}, feat);
-            t0.eval(feat, raw, value);
+            t0->eval(feat, raw, value);
             for (int m = 0; m < NMOVES; m++) policy[m] = raw[transformMove(m, t)];
           } else {
-            t0.eval(feat, policy, value);
+            t0->eval(feat, policy, value);
           }
           s.feed(policy, value);
           evals++;
@@ -135,7 +146,7 @@ static void botzone(Engine& e, double firstBudget, double turnBudget) {
 }
 
 int main(int argc, char** argv) {
-  Engine e(argv[1], argc > 5 ? argv[5] : nullptr);
+  Engine e(argv[1], argc > 5 ? std::vector<std::string>(argv + 5, argv + argc) : std::vector<std::string>{});
   if (argc > 2 && std::string(argv[2]) == "botzone") {
     botzone(e, std::stod(argv[3]), std::stod(argv[4]));
     return 0;

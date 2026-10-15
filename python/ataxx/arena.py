@@ -21,7 +21,8 @@ def main():
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--params-a", type=float, nargs=4)
     parser.add_argument("--threads", type=int, default=8)
-    parser.add_argument("--late-a")
+    parser.add_argument("--phase-a", nargs="*", default=[])
+    parser.add_argument("--phase-b", nargs="*", default=[])
     parser.add_argument("--elo", type=float, nargs=2, default=[0, 15])
     args = parser.parse_args()
     lib = library()
@@ -31,7 +32,8 @@ def main():
     lib.arena_scores.argtypes = [ctypes.c_void_p]
     n = 2 * args.pairs
     nets = [Teacher(path).net if path.endswith(".onnx") else model.load(path, "cuda").to(memory_format=torch.channels_last) for path in (args.a, args.b)]
-    late = args.late_a and model.load(args.late_a, "cuda").to(memory_format=torch.channels_last)
+    load = lambda spec: (model.load(spec.split(":")[0], "cuda").to(memory_format=torch.channels_last), *map(int, spec.split(":")[1:]))
+    phases = [[load(spec) for spec in args.phase_a], [load(spec) for spec in args.phase_b]]
     feats = [torch.zeros(n, model.PLANES, 7, 7).pin_memory() for _ in nets]
     counts, scores = np.zeros(2, np.int32), np.zeros(n, np.float32)
     book = json.load(open(args.openings))
@@ -51,10 +53,11 @@ def main():
             with torch.autocast("cuda", torch.float16), torch.no_grad():
                 x = feat[:count].cuda().contiguous(memory_format=torch.channels_last)
                 policy, value = net(x)
-                if k == 0 and late:
-                    m = x[:, 2].sum((1, 2)) < 14.5
+                empty = x[:, 2].sum((1, 2)).round()
+                for extra, lo, hi in phases[k]:
+                    m = (empty >= lo) & (empty < hi)
                     if m.any():
-                        policy[m], value[m] = late(x[m])
+                        policy[m], value[m] = extra(x[m])
             outputs += [np.ascontiguousarray(policy.float().cpu().numpy()), np.ascontiguousarray(value.float().cpu().numpy())]
         lib.arena_feed(*(o.ctypes.data for o in outputs))
     lib.arena_scores(scores.ctypes.data)
