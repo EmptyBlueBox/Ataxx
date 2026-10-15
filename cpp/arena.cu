@@ -37,7 +37,7 @@ struct ArenaGame {
     unsigned long long nodes = 0;
 };
 
-__global__ void initialize(Core* cores, Entry* entries, Core::Frame* frames, const Weights* w, const PatternWeights* p, const PatternWeights* pb, const DirectionalWeights* directional, Pos* samples, int count, int bits) {
+__global__ void initialize(Core* cores, Entry* entries, Core::Frame* frames, const Weights* w, const PatternWeights* p, const PatternWeights* pb, const DirectionalWeights* directional, const WideWeights* wide, int a, int b, Pos* samples, int count, int bits) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= count) return;
     Core& c = cores[i];
@@ -46,6 +46,7 @@ __global__ void initialize(Core* cores, Entry* entries, Core::Frame* frames, con
     c.evalWeights = w;
     c.patterns = (i & 1) == ((i / 2) & 1) ? p : pb;
     c.directional = directional;
+    c.wide = (((i & 1) == ((i / 2) & 1)) ? a : b) == 2 ? nullptr : wide;
     c.tableBits = bits;
     c.samples = samples ? samples + size_t(i) * 4096 : nullptr;
     c.init();
@@ -130,13 +131,15 @@ int main(int argc, char** argv) {
         if (!file) throw std::runtime_error("Invalid opponent pattern weights");
     }
     check(cudaMemcpy(pb, model.data(), model.size(), cudaMemcpyHostToDevice));
+    auto wide = allocate<WideWeights>(1);
+    check(cudaMemcpy(wide, &wideWeights(), sizeof(WideWeights), cudaMemcpyHostToDevice));
     auto cores = allocate<Core>(2 * count);
     auto entries = allocate<Entry>(size_t(2 * count) << bits);
     auto frames = allocate<Core::Frame>(size_t(2 * count) * 66);
     auto games = allocate<ArenaGame>(count);
     auto samples = getenv("ATAXX_SAMPLE") ? allocate<Pos>(size_t(2 * count) * 4096) : nullptr;
     check(cudaMemcpy(games, host.data(), count * sizeof(ArenaGame), cudaMemcpyHostToDevice));
-    initialize<<<(2 * count + 31) / 32, 32>>>(cores, entries, frames, w, p, pb, directional, samples, 2 * count, bits);
+    initialize<<<(2 * count + 31) / 32, 32>>>(cores, entries, frames, w, p, pb, directional, wide, a, b, samples, 2 * count, bits);
     check(cudaDeviceSynchronize());
     int lanes = getenv("ATAXX_LANES") ? atoi(getenv("ATAXX_LANES")) : 1;
     auto start = std::chrono::steady_clock::now();

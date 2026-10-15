@@ -16,7 +16,7 @@ add_custom_command(
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp"
     COMMAND "${CMAKE_COMMAND}" -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
         -DOUTPUT=${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Submission.cmake
-    DEPENDS ../python/src/board.h weights.h patterns.h directional.h engine.hpp bot.cpp cmake/Submission.cmake
+    DEPENDS ../python/src/board.h weights.h patterns.h directional.h wide.h engine.hpp bot.cpp cmake/Submission.cmake
     VERBATIM
 )
 add_custom_target(submission DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/botzone.cpp")

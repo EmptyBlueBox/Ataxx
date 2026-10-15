@@ -10,6 +10,7 @@
 #include "board.h"
 #include "weights.h"
 #include "patterns.h"
+#include "wide.h"
 #include "directional.h"
 
 namespace ataxx {
@@ -122,17 +123,18 @@ inline const ExpandedPatternWeights& expandedPatternWeights() {
 }
 
 template<bool Expanded = false>
-ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const ExpandedPatternWeights* expanded = nullptr) {
+ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const ExpandedPatternWeights* expanded = nullptr, const WideWeights* wide = nullptr) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
     int phase = popcnt(empty);
     constexpr int regions[49] = {0, 1, 2, 3, 2, 1, 0, 1, 4, 5, 6, 5, 4, 1, 2, 5, 7, 8, 7, 5, 2, 3, 6, 8, 9, 8, 6, 3, 2, 5, 7, 8, 7, 5, 2, 1, 4, 5, 6, 5, 4, 1, 0, 1, 2, 3, 2, 1, 0};
     constexpr int transforms[49] = {0, 0, 0, 0, 1, 1, 1, 4, 0, 0, 0, 1, 1, 5, 4, 4, 0, 0, 1, 5, 5, 4, 4, 4, 0, 5, 5, 5, 6, 6, 2, 2, 3, 7, 7, 6, 2, 2, 2, 3, 3, 7, 2, 2, 2, 2, 3, 3, 3};
-    u64 rows[9][2]{};
+    u64 rows[9][2]{}, wideRows[7][3];
     int score = w.tempo[phase], columns[7], rowCodes[7];
     u64 ownT = transposeBoard(own), oppT = transposeBoard(opp);
     for (int y = 0; y < 7; ++y) {
         int a = (own >> (8 * y)) & 127, b = (opp >> (8 * y)) & 127;
         rowCodes[y] = T().ternaryRow[a] + 2 * T().ternaryRow[b];
+        if (wide) for (int k = 0; k < 3; ++k) wideRows[y][k] = wide->rows[a][k] + 2 * wide->rows[b][k];
         if constexpr (Expanded) score += expanded->line[phase][std::min(y, 6 - y)][rowCodes[y]];
         else score += w.line[phase][std::min(y, 6 - y)][T().lineOrbit[rowCodes[y]]];
         for (int j = 0; j < 2; ++j) rows[y + 1][j] = T().neighborRow[a][j] + 2 * T().neighborRow[b][j];
@@ -155,6 +157,10 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const
             u64 codes = T().stripRow[outside[side]] + 81 * T().stripRow[inside[side]];
             for (int j = 0; j < 4; ++j) score += w.edge[phase][band ? band + 3 : j][(codes >> (16 * j)) & 65535];
         }
+    }
+    if (wide) for (int y = 0; y < 3; ++y) {
+        u64 codes = wideRows[y][0] + 27 * wideRows[y+1][1] + 243 * wideRows[y+2][2] + 2187 * wideRows[y+3][1] + 19683 * wideRows[y+4][0];
+        for (int x = 0; x < 3; ++x) score += wide->table[phase][wide->map[(codes >> (20*x)) & 1048575]];
     }
     u64 frontier = dilate1(empty);
     score += w.linear[phase][1] * (popcnt(dilate1(own) & empty) - popcnt(dilate1(opp) & empty));
@@ -219,6 +225,7 @@ struct SearchCore {
     bool legacy = false;
     const Weights* evalWeights = nullptr;
     const PatternWeights* patterns = nullptr;
+    const WideWeights* wide = nullptr;
     const ExpandedPatternWeights* expandedPatterns = nullptr;
     const DirectionalWeights* directional = nullptr;
     const ExpandedDirectionalWeights* expandedDirectional = nullptr;
@@ -434,9 +441,9 @@ struct SearchCore {
         if (entry.own == own && entry.opp == opp) return entry.score;
 #endif
 #ifdef __CUDA_ARCH__
-        int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns);
+        int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns, nullptr, wide);
 #else
-        int score = legacy ? tableEvaluate(p, evalWeights) : expandedPatterns && expandedPatterns->source == patterns ? patternEvaluate<true>(p, *patterns, expandedPatterns) : patternEvaluate(p, *patterns);
+        int score = legacy ? tableEvaluate(p, evalWeights) : expandedPatterns && expandedPatterns->source == patterns ? patternEvaluate<true>(p, *patterns, expandedPatterns, wide) : patternEvaluate(p, *patterns, nullptr, wide);
 #endif
 #ifndef __CUDA_ARCH__
         entry = {own, opp, score};
@@ -489,6 +496,7 @@ public:
     Search() {
         core.evalWeights = weights;
         core.patterns = &patternWeights();
+        core.wide = &wideWeights();
         core.expandedPatterns = &expandedPatternWeights();
         core.directional = &directionalWeights;
         core.expandedDirectional = &expandedDirectionalWeights();
