@@ -19,6 +19,7 @@ static double cpu() {
 
 struct Engine {
   Transformer net;
+  Transformer* late = nullptr;
   Search s;
   std::vector<std::array<int, 4>> log;
   long evals = 0, sims = 0;
@@ -27,7 +28,8 @@ struct Engine {
   float exploreShare = 1;
   std::mt19937_64 rng;
 
-  explicit Engine(const char* path) : net(path) {
+  explicit Engine(const char* path, const char* latePath = nullptr) : net(path) {
+    if (latePath) late = new Transformer(latePath);
     s.cacheLimit = 200000;
     reset();
   }
@@ -62,14 +64,15 @@ struct Engine {
       while (!s.nodes[0].proven && evals < maxEvals && sims < 64 * maxEvals && cpu() < deadline) {
         sims++;
         if (s.select(feat)) {
+          Transformer& t0 = late && popcnt(ON & ~(s.leaf.bb[0] | s.leaf.bb[1])) < 15 ? *late : net;
           if (symmetric) {
             int t = rng() % 8;
             float raw[NMOVES];
             encode(Pos{{transform(s.leaf.bb[0], t), transform(s.leaf.bb[1], t)}, s.leaf.side, s.leaf.ply}, feat);
-            net.eval(feat, raw, value);
+            t0.eval(feat, raw, value);
             for (int m = 0; m < NMOVES; m++) policy[m] = raw[transformMove(m, t)];
           } else {
-            net.eval(feat, policy, value);
+            t0.eval(feat, policy, value);
           }
           s.feed(policy, value);
           evals++;
@@ -132,7 +135,7 @@ static void botzone(Engine& e, double firstBudget, double turnBudget) {
 }
 
 int main(int argc, char** argv) {
-  Engine e(argv[1]);
+  Engine e(argv[1], argc > 5 ? argv[5] : nullptr);
   if (argc > 2 && std::string(argv[2]) == "botzone") {
     botzone(e, std::stod(argv[3]), std::stod(argv[4]));
     return 0;

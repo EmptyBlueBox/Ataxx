@@ -63,8 +63,8 @@ def batch(rows, device, squares, moves, mix=0.0, pure=0):
 
 
 class Data:
-    def __init__(self, root, minimum, fraction, maximum, prune, since):
-        self.root, self.minimum, self.fraction, self.prune, self.since = root, minimum, fraction, prune, since
+    def __init__(self, root, minimum, fraction, maximum, prune, since, phase=(0, 50)):
+        self.root, self.minimum, self.fraction, self.prune, self.since, self.phase = root, minimum, fraction, prune, since, phase
         self.ring = np.zeros(maximum, ROW)
         self.sizes, self.total, self.base = {}, 0, 0
 
@@ -74,6 +74,9 @@ class Data:
                 rows = np.load(path)
             except FileNotFoundError:
                 continue
+            if self.phase != (0, 50):
+                empty = 49 - np.bitwise_count(rows["bb"][:, 0] | rows["bb"][:, 1])
+                rows = rows[(empty >= self.phase[0]) & (empty < self.phase[1])]
             self.sizes[path] = len(rows)
             at = (self.total + np.arange(len(rows))) % len(self.ring)
             self.ring[at] = rows
@@ -115,6 +118,7 @@ def main():
     parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--export", type=int, default=1000)
     parser.add_argument("--keep", type=int, default=10000)
+    parser.add_argument("--phase", type=int, nargs=2, default=[0, 50])
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     device = "cuda"
@@ -146,7 +150,7 @@ def main():
     else:
         model.save(ema, args.out / "latest.pt")
     squares, moves = tables(device)
-    data = Data(args.data, int(args.window[0]), args.window[1], int(args.window[2]), int(args.prune), args.since)
+    data = Data(args.data, int(args.window[0]), args.window[1], int(args.window[2]), int(args.prune), args.since, tuple(args.phase))
     data.refresh()
     extra = args.extra and Data(Path(args.extra[0]), 0, 1.0, int(2e7), int(args.prune), "")
     if args.fresh:

@@ -9,7 +9,7 @@ os.chmod(version + "/engine", 0o755)
 
 
 def start(first, env=None):
-    command = [version + "/engine", version + "/net.bin", "botzone", str(first), "3.85"]
+    command = [version + "/engine", version + "/net.bin", "botzone", str(first), "3.85", version + "/late.bin"]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, bufsize=1, env=env)
 
 
