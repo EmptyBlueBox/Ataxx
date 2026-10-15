@@ -324,6 +324,19 @@ struct Search {
       if (e.child && nodes[e.child].proven) s -= 1e6f * nodes[e.child].pv;
       if (s > bs) bs = s, bi = j;
     }
+    if (r.proven) return bi;
+    uint32_t top = 0;
+    for (int j = 0; j < r.n; j++) top = std::max(top, childVisits(j));
+    bs = -1e30f;
+    for (int j = 0; j < r.n; j++) {
+      uint32_t id = edges[r.edge + j].child;
+      if (!id) continue;
+      const Node& c = nodes[id];
+      if (c.proven && c.pv > 0) continue;
+      if (!c.proven && (c.visits < 2 || c.visits < 0.05f * top)) continue;
+      float s = c.proven ? -c.pv : -c.sum / c.visits - 1.f / std::sqrt((float)c.visits);
+      if (s > bs) bs = s, bi = j;
+    }
     return bi;
   }
 
