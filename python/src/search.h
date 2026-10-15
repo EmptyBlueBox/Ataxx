@@ -280,8 +280,9 @@ struct Search {
       Move mv[NMOVES];
       int n = genGeometric(leaf, mv);
       std::vector<float>& c = cache[cacheKey(leaf)];
-      c.assign(value, value + 4);
-      for (int j = 0; j < n; j++) c.push_back(policy[mv[j]]);
+      c.resize(n + 4);
+      std::copy_n(value, 4, c.begin());
+      for (int j = 0; j < n; j++) c[j + 4] = policy[mv[j]];
     }
     expand(policy, value);
   }
