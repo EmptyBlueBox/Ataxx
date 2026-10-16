@@ -3,11 +3,9 @@ import torch
 from ataxx import model
 
 
-class Batch:
-    def __init__(self, path, capacity):
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        self.net = model.load(path, "cuda").to(memory_format=torch.channels_last)
+class Graph:
+    def __init__(self, net, capacity):
+        self.net = net
         self.capacity = capacity
         self.graphs = {capacity: self.capture(capacity)}
 
@@ -22,12 +20,23 @@ class Batch:
                 policy, value = forward(x)
         return x, graph, policy, value
 
-    def __call__(self, features, indices):
-        n = len(indices)
+    def __call__(self, features):
+        n = len(features)
         size = min(self.capacity, 1 << (n - 1).bit_length())
         if size not in self.graphs:
             self.graphs[size] = self.capture(size)
         x, graph, policy, value = self.graphs[size]
-        x[:n].copy_(features[indices], non_blocking=True)
+        x[:n].copy_(features, non_blocking=True)
         graph.replay()
-        return policy[:n].cpu().numpy(), value[:n].cpu().numpy()
+        return policy[:n], value[:n]
+
+
+class Batch(Graph):
+    def __init__(self, path, capacity):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        super().__init__(model.load(path, "cuda").to(memory_format=torch.channels_last), capacity)
+
+    def __call__(self, features, indices):
+        policy, value = super().__call__(features[indices])
+        return policy.cpu().numpy(), value.cpu().numpy()

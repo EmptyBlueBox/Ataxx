@@ -31,6 +31,7 @@ def library():
 def main():
     from ataxx.distill import Teacher
     from ataxx.arena import evaluate
+    from ataxx.batch import Graph
     parser = argparse.ArgumentParser()
     parser.add_argument("--net", type=Path, required=True)
     parser.add_argument("--student", type=Path)
@@ -68,7 +69,7 @@ def main():
         with torch.autocast("cuda", torch.float16), torch.no_grad():
             x = feats[b].cuda(non_blocking=True).contiguous(memory_format=torch.channels_last)
             policy, value = evaluate(net, phases, x, covered) if phases else net(x)
-        pending[b] = (policy.float(), value.float())
+        pending[b] = tuple(t.to(dtype=torch.float32, copy=args.compile) for t in (policy, value))
 
     def fetch(b):
         policy, value = (np.ascontiguousarray(t.cpu().numpy()) for t in pending[b])
@@ -85,9 +86,10 @@ def main():
                 net, loaded = model.load(args.net, "cuda").to(memory_format=torch.channels_last), mtime
             phases = [(model.load(path, "cuda").to(memory_format=torch.channels_last), lo, hi) for path, lo, hi in specs]
             if args.compile:
-                if net is not None:
-                    net = torch.compile(net, fullgraph=True, dynamic=True)
-                phases = [(torch.compile(n, fullgraph=True, dynamic=True), lo, hi) for n, lo, hi in phases]
+                with torch.autocast("cuda", torch.float16):
+                    if net is not None:
+                        net = Graph(net, half)
+                    phases = [(Graph(n, half), lo, hi) for n, lo, hi in phases]
         if pending[0] is None:
             submit(0)
             submit(1)
