@@ -112,7 +112,7 @@ def main():
     weights = {t.name for t in model.graph.initializer}
     nodes = [n.name for n in model.graph.node if n.op_type == "MatMul" and n.name.startswith("/model/blocks.") and n.input[1] in weights]
     quantize_dynamic(args.src, args.dst, op_types_to_quantize=["MatMul"], nodes_to_quantize=nodes,
-                     weight_type=QuantType.QInt8, per_channel=True, extra_options={"MatMulConstBOnly": True})
+                     weight_type=QuantType.QInt8, per_channel=True, reduce_range=True, extra_options={"MatMulConstBOnly": True})
     model = onnx.load(args.dst)
     for prop in model.metadata_props:
         if prop.key == "is_int8":
