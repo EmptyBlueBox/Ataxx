@@ -152,7 +152,7 @@ def main():
     squares, moves = tables(device)
     data = Data(args.data, int(args.window[0]), args.window[1], int(args.window[2]), int(args.prune), args.since, tuple(args.phase))
     data.refresh()
-    extra = args.extra and Data(Path(args.extra[0]), 0, 1.0, int(2e7), int(args.prune), "")
+    extra = args.extra and Data(Path(args.extra[0]), 0, 1.0, int(2e7), int(args.prune), "", tuple(args.phase))
     if args.fresh:
         samples = 0
     elif saved:
