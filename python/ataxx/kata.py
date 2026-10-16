@@ -38,7 +38,7 @@ class Block(nn.Module):
 
 
 class KataNet(nn.Module):
-    def __init__(self, blocks=12, c=384, heads=6, ffn=1024):
+    def __init__(self, blocks=12, c=384, heads=6, ffn=1024, policy=48, value=96, hidden=128):
         super().__init__()
         self.spatial = nn.Conv2d(22, c, 3, padding=1, bias=False)
         self.glob = nn.Linear(19, c, bias=False)
@@ -46,13 +46,13 @@ class KataNet(nn.Module):
         self.register_buffer("cos", torch.zeros(49, 1, c // heads))
         self.register_buffer("sin", torch.zeros(49, 1, c // heads))
         self.final = nn.Parameter(torch.zeros(4, c))
-        self.p1, self.g1 = nn.Conv2d(c, 48, 1, bias=False), nn.Conv2d(c, 48, 1)
-        self.pg, self.ppass = nn.Linear(144, 48, bias=False), nn.Linear(144, 4, bias=False)
-        self.p2b, self.p2 = nn.Parameter(torch.zeros(48)), nn.Conv2d(48, 4, 1, bias=False)
-        self.v1 = nn.Conv2d(c, 96, 1)
-        self.v2 = nn.Linear(288, 128)
-        self.value, self.misc, self.more = nn.Linear(128, 3), nn.Linear(128, 10), nn.Linear(128, 8)
-        self.own = nn.Conv2d(96, 1, 1, bias=False)
+        self.p1, self.g1 = nn.Conv2d(c, policy, 1, bias=False), nn.Conv2d(c, policy, 1)
+        self.pg, self.ppass = nn.Linear(3 * policy, policy, bias=False), nn.Linear(3 * policy, 4, bias=False)
+        self.p2b, self.p2 = nn.Parameter(torch.zeros(policy)), nn.Conv2d(policy, 4, 1, bias=False)
+        self.v1 = nn.Conv2d(c, value, 1)
+        self.v2 = nn.Linear(3 * value, hidden)
+        self.value, self.misc, self.more = nn.Linear(hidden, 3), nn.Linear(hidden, 10), nn.Linear(hidden, 8)
+        self.own = nn.Conv2d(value, 1, 1, bias=False)
 
     def forward(self, spatial, glob):
         n = len(spatial)
@@ -74,18 +74,21 @@ def load(path):
     w = {t.name: torch.from_numpy(numpy_helper.to_array(t).copy()) for t in m.graph.initializer}
     consts = {n.output[0]: torch.from_numpy(numpy_helper.to_array(n.attribute[0].t).copy()) for n in m.graph.node if n.op_type == "Constant" and n.attribute[0].name == "value"}
     weight = {n.name: next(w[i] for i in n.input if i in w) for n in m.graph.node if n.op_type in ("MatMul", "Gemm") and any(i in w for i in n.input)}
-    net = KataNet()
+    tables = [v for k, v in consts.items() if k.startswith("/model/blocks.0/") and v.numel() > 49 and v.numel() == 49 * v.shape[-1]]
+    c = w["model.conv_spatial.weight"].shape[0]
+    blocks = sum(k.startswith("model.blocks.") and k.endswith("norm1.weight") for k in w)
+    net = KataNet(blocks, c, c // (tables[0].numel() // 49), weight["/model/blocks.0/ffn_linear1/MatMul"].shape[1],
+                  w["model.policy_head.conv1p.weight"].shape[0], w["model.value_head.conv1.weight"].shape[0], w["model.value_head.linear2.weight"].shape[0])
     sd = net.state_dict()
     sd["spatial.weight"] = w["model.conv_spatial.weight"]
     sd["glob.weight"] = weight["/model/linear_global/MatMul"].T
-    for i in range(12):
+    for i in range(blocks):
         b = f"/model/blocks.{i}/"
         sd[f"blocks.{i}.norm1"], sd[f"blocks.{i}.norm2"] = w[f"model.blocks.{i}.norm1.weight"], w[f"model.blocks.{i}.norm2.weight"]
         sd[f"blocks.{i}.qkv.weight"] = torch.cat([weight[b + f"{k}_proj/MatMul"].T for k in "qkv"])
         sd[f"blocks.{i}.out.weight"] = weight[b + "out_proj/MatMul"].T
         sd[f"blocks.{i}.ffn1.weight"] = torch.cat([weight[b + "ffn_linear1/MatMul"].T, weight[b + "ffn_linear_gate/MatMul"].T])
         sd[f"blocks.{i}.ffn2.weight"] = weight[b + "ffn_linear2/MatMul"].T
-    tables = [consts[n.input[0]] for n in m.graph.node if n.name in ("/model/blocks.0/Reshape_4", "/model/blocks.0/Reshape_5")]
     sd["cos"], sd["sin"] = tables[0].view(49, 1, -1), tables[1].view(49, 1, -1)
     final = {n.name: next(w[i] for i in n.input if i in w) for n in m.graph.node if n.name.startswith("/model/norm_trunkfinal/")}
     sd["final"] = torch.stack([final[f"/model/norm_trunkfinal/{k}"].flatten() for k in ("Sub", "Div", "Mul", "Add")])
