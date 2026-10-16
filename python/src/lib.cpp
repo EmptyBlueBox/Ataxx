@@ -190,7 +190,7 @@ struct Arena {
     while (g.score < 0) {
       int w = mover(g);
       Search& s = g.s[w];
-      long budget = g.moves[w] ? evals[w] : 3 * evals[w];
+      long budget = g.moves[w] ? evals[w] : 2 * evals[w];
       if (s.nodes[0].expanded && (s.nodes[0].proven || s.nodes[0].n == 1 || g.used >= budget || g.sims >= 64 * budget)) {
         g.moves[w]++;
         apply(g, s.edges[s.nodes[0].edge + s.best()].move);
