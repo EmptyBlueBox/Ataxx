@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from ataxx import model
+from ataxx.batch import Batch
 from ataxx.distill import Teacher
 from ataxx.match import ROOT, summary
 from ataxx.selfplay import NMOVES, library
@@ -37,6 +38,7 @@ def main():
     parser.add_argument("--phase-a", nargs="*", default=[])
     parser.add_argument("--phase-b", nargs="*", default=[])
     parser.add_argument("--elo", type=float, nargs=2, default=[0, 15])
+    parser.add_argument("--compile", action="store_true")
     args = parser.parse_args()
     lib = library()
     lib.arena_create.argtypes = [ctypes.c_int, ctypes.c_long, ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
@@ -44,10 +46,15 @@ def main():
     lib.arena_feed.argtypes = [ctypes.c_void_p] * 4
     lib.arena_scores.argtypes = [ctypes.c_void_p]
     n = 2 * args.pairs
-    nets = [Teacher(path).net if path.endswith(".onnx") else model.load(path, "cuda").to(memory_format=torch.channels_last) for path in (args.a, args.b)]
-    load = lambda spec: (model.load(spec.split(":")[0], "cuda").to(memory_format=torch.channels_last), *map(int, spec.split(":")[1:]))
-    phases = [[load(spec) for spec in args.phase_a], [load(spec) for spec in args.phase_b]]
-    covered = [all(any(lo <= e < hi for _, lo, hi in bank) for e in range(50)) for bank in phases]
+    banks = {}
+    def load(path):
+        if path not in banks:
+            banks[path] = Batch(path, n) if args.compile else Teacher(path).net if path.endswith(".onnx") else model.load(path, "cuda").to(memory_format=torch.channels_last)
+        return banks[path]
+    specs = [[(path, int(lo), int(hi)) for path, lo, hi in (s.rsplit(":", 2) for s in bank)] for bank in (args.phase_a, args.phase_b)]
+    covered = [all(any(lo <= e < hi for _, lo, hi in bank) for e in range(50)) for bank in specs]
+    nets = [None if covered[k] else load(path) for k, path in enumerate((args.a, args.b))]
+    phases = [[(load(path), lo, hi) for path, lo, hi in bank] for bank in specs]
     feats = [torch.zeros(n, model.PLANES, 7, 7).pin_memory() for _ in nets]
     counts, scores = np.zeros(2, np.int32), np.zeros(n, np.float32)
     book = json.load(open(args.openings))
@@ -64,10 +71,19 @@ def main():
             if not count:
                 outputs += [np.zeros((1, NMOVES), np.float32), np.zeros((1, 4), np.float32)]
                 continue
-            with torch.autocast("cuda", torch.float16), torch.no_grad():
-                x = feat[:count].cuda().contiguous(memory_format=torch.channels_last)
-                policy, value = evaluate(net, phases[k], x, covered[k])
-            outputs += [np.ascontiguousarray(policy.float().cpu().numpy()), np.ascontiguousarray(value.float().cpu().numpy())]
+            if args.compile:
+                policy, value = (np.empty((count, NMOVES), np.float32), np.empty((count, 4), np.float32)) if covered[k] else net(feat, np.arange(count))
+                empty = feat[:count, 2].sum((1, 2)).numpy().round().astype(int)
+                for extra, lo, hi in phases[k]:
+                    indices = np.flatnonzero((empty >= lo) & (empty < hi))
+                    if len(indices):
+                        policy[indices], value[indices] = extra(feat, indices)
+                outputs += [policy, value]
+            else:
+                with torch.autocast("cuda", torch.float16), torch.no_grad():
+                    x = feat[:count].cuda().contiguous(memory_format=torch.channels_last)
+                    policy, value = evaluate(net, phases[k], x, covered[k])
+                outputs += [np.ascontiguousarray(policy.float().cpu().numpy()), np.ascontiguousarray(value.float().cpu().numpy())]
         lib.arena_feed(*(o.ctypes.data for o in outputs))
     lib.arena_scores(scores.ctypes.data)
     pairs = [(dict(score=float(scores[2 * k])), dict(score=float(scores[2 * k + 1]))) for k in range(args.pairs)]
