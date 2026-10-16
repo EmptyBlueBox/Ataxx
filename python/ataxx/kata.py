@@ -1,3 +1,5 @@
+import argparse
+
 import onnx
 import torch
 import torch.nn as nn
@@ -97,3 +99,26 @@ def load(path):
     sd["own.weight"] = w["model.value_head.conv_ownership.weight"]
     net.load_state_dict(sd)
     return net.eval()
+
+
+def main():
+    from onnxruntime.quantization import QuantType, quantize_dynamic
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("src")
+    parser.add_argument("dst")
+    args = parser.parse_args()
+    model = onnx.load(args.src)
+    weights = {t.name for t in model.graph.initializer}
+    nodes = [n.name for n in model.graph.node if n.op_type == "MatMul" and n.name.startswith("/model/blocks.") and n.input[1] in weights]
+    quantize_dynamic(args.src, args.dst, op_types_to_quantize=["MatMul"], nodes_to_quantize=nodes,
+                     weight_type=QuantType.QInt8, per_channel=True, extra_options={"MatMulConstBOnly": True})
+    model = onnx.load(args.dst)
+    for prop in model.metadata_props:
+        if prop.key == "is_int8":
+            prop.value = "true"
+    onnx.save(model, args.dst)
+
+
+if __name__ == "__main__":
+    main()
