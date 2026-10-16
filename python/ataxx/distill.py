@@ -34,7 +34,8 @@ class Teacher:
     def forward(self, k, x, g):
         model, dev = self.models[k % len(self.models)]
         n = len(x)
-        x, g = F.pad(x, (0, 0, 0, 0, 0, 0, 0, -n % 1024)), F.pad(g, (0, 0, 0, -n % 1024))
+        padding = -n % min(1024, 1 << (n - 1).bit_length())
+        x, g = F.pad(x, (0, 0, 0, 0, 0, 0, 0, padding)), F.pad(g, (0, 0, 0, padding))
         with torch.no_grad():
             policy, value = model(x.to(dev).half(), g.to(dev).half())[:2]
         return policy[:n, 0, :49].float().to(self.device), value[:n].float().to(self.device)
