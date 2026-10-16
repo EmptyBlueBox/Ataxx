@@ -287,7 +287,7 @@ int arena_collect(float* featA, float* featB, int* counts) {
   float* feat[2] = {featA, featB};
   int n = A.games.size();
   std::vector<float> tmp((long)n * PLANES * SQ);
-#pragma omp parallel for schedule(dynamic, 16)
+#pragma omp parallel for schedule(dynamic, 4)
   for (int i = 0; i < n; i++) A.step(A.games[i], tmp.data() + (long)i * PLANES * SQ);
   A.order[0].clear();
   A.order[1].clear();
@@ -309,7 +309,7 @@ void arena_feed(const float* polA, const float* valA, const float* polB, const f
   const float* val[2] = {valA, valB};
   for (int w = 0; w < 2; w++) {
     int n = A.order[w].size();
-#pragma omp parallel for schedule(dynamic, 16)
+#pragma omp parallel for schedule(dynamic, 4)
     for (int j = 0; j < n; j++) A.games[A.order[w][j]].s[w].feed(pol[w] + (long)j * NMOVES, val[w] + (long)j * 4);
   }
 }
