@@ -30,9 +30,13 @@ def library():
 
 def main():
     from ataxx.distill import Teacher
+    from ataxx.arena import evaluate
     parser = argparse.ArgumentParser()
     parser.add_argument("--net", type=Path, required=True)
     parser.add_argument("--student", type=Path)
+    parser.add_argument("--phase", nargs="*", default=[])
+    parser.add_argument("--rows", type=int, default=0)
+    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--games", type=int, default=2048)
     parser.add_argument("--full", type=int, default=400)
@@ -52,7 +56,9 @@ def main():
     half = args.games // 2
     banks = [(0, half), (half, args.games)]
     feats = [torch.zeros(half, model.PLANES, 7, 7).pin_memory() for _ in banks]
-    net, loaded = None, 0
+    specs = [(Path(path), int(lo), int(hi)) for path, lo, hi in (s.rsplit(":", 2) for s in args.phase)]
+    covered = all(any(lo <= e < hi for _, lo, hi in specs) for e in range(50))
+    net, loaded, phases, written = None, None, [], 0
     pending = [None, None]
     rows, buf, stats = [], np.zeros(1 << 16, ROW), np.zeros(4, np.int64)
     started, steps, last = time.time(), 0, time.time()
@@ -60,7 +66,8 @@ def main():
     def submit(b):
         lib.collect(*banks[b], feats[b].numpy().ctypes.data)
         with torch.autocast("cuda", torch.float16), torch.no_grad():
-            policy, value = net(feats[b].cuda(non_blocking=True).contiguous(memory_format=torch.channels_last))
+            x = feats[b].cuda(non_blocking=True).contiguous(memory_format=torch.channels_last)
+            policy, value = evaluate(net, phases, x, covered) if phases else net(x)
         pending[b] = (policy.float(), value.float())
 
     def fetch(b):
@@ -68,12 +75,19 @@ def main():
         lib.feed(*banks[b], policy.ctypes.data, value.ctypes.data)
 
     while True:
-        mtime = args.net.stat().st_mtime
+        mtime = tuple(path.stat().st_mtime_ns for path in [args.net, *[p for p, _, _ in specs]])
         if mtime != loaded:
-            if args.student:
+            if covered:
+                net, loaded = None, mtime
+            elif args.student:
                 net, loaded = Teacher(args.net, student=model.load(args.student, "cuda")).net, mtime
             else:
                 net, loaded = model.load(args.net, "cuda").to(memory_format=torch.channels_last), mtime
+            phases = [(model.load(path, "cuda").to(memory_format=torch.channels_last), lo, hi) for path, lo, hi in specs]
+            if args.compile:
+                if net is not None:
+                    net = torch.compile(net, fullgraph=True, dynamic=True)
+                phases = [(torch.compile(n, fullgraph=True, dynamic=True), lo, hi) for n, lo, hi in phases]
         if pending[0] is None:
             submit(0)
             submit(1)
@@ -90,6 +104,11 @@ def main():
             np.save(args.out / f"{name}.tmp.npy", np.concatenate(rows))
             os.rename(args.out / f"{name}.tmp.npy", args.out / f"{name}.npy")
             rows = []
+            written += count
+            if args.rows and written >= args.rows:
+                lib.stats(stats.ctypes.data)
+                print(f"completed rows={written} games={stats[0]} seconds={time.time()-started:.3f}", flush=True)
+                return
         if time.time() - last > 60:
             last = time.time()
             lib.stats(stats.ctypes.data)
