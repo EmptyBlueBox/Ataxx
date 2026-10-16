@@ -275,6 +275,7 @@ void arena_create(int pairs, long evalsA, long evalsB, const int* moves, const i
       h.reset(p);
       for (Search& s : g.s) {
         s.reset(p, h);
+        s.cacheLimit = 65536;
         for (int i = 0; i < lengths[k]; i++) s.advance(fromCoord(moves[4 * i], moves[4 * i + 1], moves[4 * i + 2], moves[4 * i + 3]));
       }
     }
