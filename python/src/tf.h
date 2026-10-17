@@ -210,11 +210,29 @@ struct Dense8 {
 #define ATAXX_MADD(a, u, m) \
   _mm256_add_epi32(a, _mm256_add_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_and_si256(_mm256_srli_epi16(u, 1), half), m), twos), \
                                       _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_and_si256(u, bit), m), ones)))
-#define ATAXX_VNNI(a, u, m) _mm256_dpbusd_epi32(a, u, m)
 #define ATAXX_AVXVNNI(a, u, m) _mm256_dpbusd_avx_epi32(a, u, m)
   ATAXX_PRODUCT(product, "avx2", ATAXX_MADD)
-  ATAXX_PRODUCT(productV, "avx2,avx512f,avx512vl,avx512vnni", ATAXX_VNNI)
   ATAXX_PRODUCT(productA, "avx2,avxvnni", ATAXX_AVXVNNI)
+
+  __attribute__((target("avx2,avx512f,avx512vl,avx512vnni"))) void productT(int n, float* y) const {
+    for (int r = 0; r < n; r += 7) {
+      const uint8_t* x[7];
+      float* yr[7];
+      for (int e = 0; e < 7; e++) x[e] = q + std::min(r + e, n - 1) * deep, yr[e] = y + std::min(r + e, n - 1) * wide;
+      for (int o = 0; o < wide; o += 16) {
+        __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0, a4 = a0, a5 = a0, a6 = a0, c0 = a0, c1 = a0, c2 = a0, c3 = a0, c4 = a0, c5 = a0, c6 = a0;
+        const int8_t* p = w + o * 4;
+        for (int k = 0; k < deep; k += 4, p += wide * 4) {
+          __m256i m0 = _mm256_load_si256((const __m256i*)p), m1 = _mm256_load_si256((const __m256i*)(p + 32)), u;
+#define ATAXX_TILE(A, C, E) u = _mm256_set1_epi32(*(const int*)(x[E] + k)); __asm__("%{evex%} vpdpbusd %2, %1, %0" : "+v"(A) : "v"(u), "v"(m0)); __asm__("%{evex%} vpdpbusd %2, %1, %0" : "+v"(C) : "v"(u), "v"(m1));
+          ATAXX_TILE(a0, c0, 0) ATAXX_TILE(a1, c1, 1) ATAXX_TILE(a2, c2, 2) ATAXX_TILE(a3, c3, 3) ATAXX_TILE(a4, c4, 4) ATAXX_TILE(a5, c5, 5) ATAXX_TILE(a6, c6, 6)
+        }
+        __m256 m = _mm256_load_ps(mult + o), d = _mm256_load_ps(b + o), m8 = _mm256_load_ps(mult + o + 8), d8 = _mm256_load_ps(b + o + 8);
+#define ATAXX_OUT(A, C, E) _mm256_store_ps(yr[E] + o, _mm256_fmadd_ps(_mm256_cvtepi32_ps(A), m, d)), _mm256_store_ps(yr[E] + o + 8, _mm256_fmadd_ps(_mm256_cvtepi32_ps(C), m8, d8));
+        ATAXX_OUT(a6, c6, 6) ATAXX_OUT(a5, c5, 5) ATAXX_OUT(a4, c4, 4) ATAXX_OUT(a3, c3, 3) ATAXX_OUT(a2, c2, 2) ATAXX_OUT(a1, c1, 1) ATAXX_OUT(a0, c0, 0)
+      }
+    }
+  }
 
   void run(const float* x, int stride, int n, float* y) const {
     const __m256 base = _mm256_set1_ps(lo), scale = _mm256_set1_ps(inv);
@@ -228,7 +246,7 @@ struct Dense8 {
         _mm256_store_si256((__m256i*)(qq + r * deep + i), _mm256_permutevar8x32_epi32(_mm256_packus_epi16(ab, cd), order));
       }
     }
-    if (VNNI == 2) productV(n, y);
+    if (VNNI == 2) productT(n, y);
     else if (VNNI == 1) productA(n, y);
     else product(n, y);
   }
