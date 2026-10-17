@@ -176,6 +176,7 @@ int main(int argc, char** argv) {
   if (argc > 2 && std::string(argv[2]) == "botzone") {
     e.explorePlies = 10;
     e.exploreShare = 0.8f;
+    e.symmetric = true;
     e.rng.seed(std::random_device{}());
     botzone(e, std::stod(argv[3]), std::stod(argv[4]));
     return 0;
