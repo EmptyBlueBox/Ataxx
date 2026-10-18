@@ -67,6 +67,7 @@ struct Engine {
     Move mv[NMOVES];
     int n = genLegal(s.root, s.hist, mv);
     evals = sims = 0;
+    if (s.cache.size() > s.cacheLimit / 2) s.cache.clear();
     Move chosen = mv[0];
     if (n > 1) {
       while (!s.nodes[0].proven && evals < maxEvals && sims < 64 * maxEvals && cpu() < deadline) {
@@ -126,8 +127,8 @@ static std::vector<std::array<int, 4>> objects(const std::string& text, const ch
 static void botzone(Engine& e, double firstBudget, double turnBudget) {
   std::string line;
   bool first = true;
+  double began = 0;
   while (std::getline(std::cin, line)) {
-    double began = first ? 0 : cpu();
     if (first) {
       auto requests = objects(line, "requests"), responses = objects(line, "responses");
       for (size_t i = 0; i < requests.size(); i++) {
@@ -138,9 +139,10 @@ static void botzone(Engine& e, double firstBudget, double turnBudget) {
       e.apply(field(line, 0, "x0"), field(line, 0, "y0"), field(line, 0, "x1"), field(line, 0, "y1"));
     }
     Coord c = e.go(1L << 40, began + (first ? firstBudget : turnBudget));
-    e.apply(c.x0, c.y0, c.x1, c.y1);
     printf("{\"response\":{\"x0\":%d,\"y0\":%d,\"x1\":%d,\"y1\":%d},\"debug\":\"e%ld s%ld v%u q%.3f t%.0f\"}\n>>>BOTZONE_REQUEST_KEEP_RUNNING<<<\n", c.x0, c.y0, c.x1, c.y1, e.evals, e.sims, e.s.nodes[0].visits, e.rootQ(), (cpu() - began) * 1000);
     fflush(stdout);
+    began = cpu();
+    e.apply(c.x0, c.y0, c.x1, c.y1);
     first = false;
   }
 }

@@ -234,11 +234,16 @@ struct Dense8 {
     }
   }
 
-  void run(const float* x, int stride, int n, float* y) const {
+  void run(const float* x, int stride, int n, float* y, int act = 0) const {
     const __m256 base = _mm256_set1_ps(lo), scale = _mm256_set1_ps(inv);
     const __m256i order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
     uint8_t* __restrict__ qq = q;
-    auto cvt = [&](const float* p) { return _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_sub_ps(_mm256_load_ps(p), base), scale)); };
+    auto cvt = [&](const float* p) {
+      __m256 v = _mm256_load_ps(p);
+      v = act == 2 ? gelu8(v) : act == 1 ? _mm256_max_ps(v, _mm256_setzero_ps()) : v;
+      __asm__("" : "+x"(v));
+      return _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_sub_ps(v, base), scale));
+    };
     for (int r = 0; r < n; r++) {
       const float* row = x + r * stride;
       for (int i = 0; i < in; i += 32) {
@@ -422,9 +427,12 @@ struct Transformer {
       l.norm2.run(x, y);
       if (quant) l.up8.run(y, c, SQ, big);
       else l.up.run(y, c, SQ, big);
-      for (int i = 0; i < SQ * ratio * c; i += W) _mm256_store_ps(big + i, smooth ? gelu8(_mm256_load_ps(big + i)) : _mm256_max_ps(_mm256_load_ps(big + i), _mm256_setzero_ps()));
-      if (quant) l.down8.run(big, ratio * c, SQ, y);
-      else l.down.run(big, ratio * c, SQ, y);
+      if (quant) {
+        l.down8.run(big, ratio * c, SQ, y, smooth ? 2 : 1);
+      } else {
+        for (int i = 0; i < SQ * ratio * c; i += W) _mm256_store_ps(big + i, smooth ? gelu8(_mm256_load_ps(big + i)) : _mm256_max_ps(_mm256_load_ps(big + i), _mm256_setzero_ps()));
+        l.down.run(big, ratio * c, SQ, y);
+      }
       for (int i = 0; i < SQ * c; i += W) store(x + i, load(x + i) + load(y + i));
     }
     norm.run(x, y);
