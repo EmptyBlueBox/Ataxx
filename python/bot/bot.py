@@ -10,7 +10,7 @@ os.chmod(version + "/engine-ice", 0o755)
 
 
 def start(first, binary, env=None):
-    command = [version + "/" + binary, version + "/net.bin", "botzone", str(first), "3.90"] + [version + "/" + p for p in "@@P@@".split()]
+    command = [version + "/" + binary, version + "/net.bin", "botzone", str(first), "3.94"] + [version + "/" + p for p in "@@P@@".split()]
     return subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True, bufsize=1, env=env)
 
 
