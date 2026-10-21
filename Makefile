@@ -16,10 +16,4 @@ build/engine-ice: src/engine.cpp $(HDR) | build
 build/libataxx.so: src/lib.cpp $(HDR) | build
 	$(CXX) $(CXXFLAGS) -fopenmp -fPIC -shared -o $@ $<
 
-build/test_rules: src/test_rules.cpp $(HDR) | build
-	$(CXX) $(CXXFLAGS) -fopenmp -o $@ $<
-
-test: build/test_rules
-	build/test_rules
-
-.PHONY: all test
+.PHONY: all

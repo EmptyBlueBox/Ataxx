@@ -8,7 +8,6 @@
 #include <ctime>
 #include <vector>
 #include "board.h"
-#include "weights.h"
 #include "patterns.h"
 #include "wide.h"
 #include "directional.h"
@@ -21,57 +20,16 @@ constexpr int infinity = 1000000, win = 100000;
 struct Game {
     Pos pos = start();
     History hist;
-    std::vector<Pos> past;
-    std::vector<Move> moves;
 
     Game() { hist.reset(pos); }
 
-    int legal(Move* out) const {
-        Outcome o;
-        return terminal(pos, o) ? 0 : genLegal(pos, hist, out);
-    }
-
-    bool legal(int from, int to) const {
-        int dx = to % 7 - from % 7, dy = to / 7 - from / 7;
-        if (!(pos.bb[pos.side] >> bitOfSq(from) & 1) || std::max(std::abs(dx), std::abs(dy)) > 2) return false;
-        Move moves[NMOVES];
-        return std::count(moves, moves + legal(moves), fromCoord(from % 7, from / 7, to % 7, to / 7));
-    }
-
-    int winner() const {
-        Outcome o;
-        Move moves[NMOVES];
-        return terminal(pos, o) ? o.winner : genLegal(pos, hist, moves) ? 2 : pos.side ^ 1;
-    }
-
     void play(Move move) {
-        past.push_back(pos);
-        moves.push_back(move);
         hist.push(pos, move);
         ataxx::play(pos, move);
     }
-
-    void undo() {
-        pos = past.back();
-        past.pop_back();
-        moves.pop_back();
-        hist.pop();
-    }
 };
 
-ATAXX_HD inline int tableEvaluate(const Pos& p, const Weights* weights) {
-    u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], all = own | opp;
-    const Weights& w = weights[popcnt(ON & ~all) * PHASES / 50];
-    const Tables& t = T();
-    int score = w.tempo;
-    for (u64 near = dilate1(all); near; near &= near - 1) {
-        int bit = lsb(near), square = sqOfBit(bit), state = own >> bit & 1 ? 1 : opp >> bit & 1 ? 2 : 0;
-        score += w.cell[state][popcnt(t.ring1[square] & own) * 9 + popcnt(t.ring1[square] & opp)] + w.square[state][square];
-    }
-    return score;
-}
-
-ATAXX_HD inline void patternCodes(u64 own, u64 opp, int* codes) {
+inline void patternCodes(u64 own, u64 opp, int* codes) {
     const int ternary[8] = {0, 1, 3, 4, 9, 10, 12, 13};
     int rows[9][7]{};
     for (int y = 0; y < 7; ++y) {
@@ -87,7 +45,7 @@ ATAXX_HD inline void patternCodes(u64 own, u64 opp, int* codes) {
             codes[y * 7 + x] = rows[y][x] + 27 * rows[y + 1][x] + 729 * rows[y + 2][x];
 }
 
-ATAXX_HD inline u64 transposeBoard(u64 b) {
+inline u64 transposeBoard(u64 b) {
     u64 t = (b ^ (b >> 7)) & 0x00aa00aa00aa00aaULL;
     b ^= t ^ (t << 7);
     t = (b ^ (b >> 14)) & 0x0000cccc0000ccccULL;
@@ -97,7 +55,6 @@ ATAXX_HD inline u64 transposeBoard(u64 b) {
 }
 
 struct ExpandedPatternWeights {
-    const PatternWeights* source;
     std::int16_t table[46][25][19683], line[46][4][2187];
 };
 
@@ -105,7 +62,6 @@ inline const ExpandedPatternWeights& expandedPatternWeights() {
     static const auto* weights = [] {
         auto* result = new ExpandedPatternWeights;
         const auto& w = patternWeights();
-        result->source = &w;
         const auto& t = T();
         const int regions[25] = {0,1,2,1,0,1,3,4,3,1,2,4,5,4,2,1,3,4,3,1,0,1,2,1,0};
         const int transforms[25] = {0,0,0,1,1,4,0,0,1,5,4,4,0,5,5,6,2,2,3,7,2,2,2,3,3};
@@ -122,34 +78,27 @@ inline const ExpandedPatternWeights& expandedPatternWeights() {
     return *weights;
 }
 
-template<bool Expanded = false>
-ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const ExpandedPatternWeights* expanded = nullptr, const WideWeights* wide = nullptr) {
+inline int patternEvaluate(const Pos& p, const PatternWeights& w, const ExpandedPatternWeights* expanded, const WideWeights* wide) {
     u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1], empty = ON & ~(own | opp);
     int phase = popcnt(empty);
-    constexpr int regions[49] = {0, 1, 2, 3, 2, 1, 0, 1, 4, 5, 6, 5, 4, 1, 2, 5, 7, 8, 7, 5, 2, 3, 6, 8, 9, 8, 6, 3, 2, 5, 7, 8, 7, 5, 2, 1, 4, 5, 6, 5, 4, 1, 0, 1, 2, 3, 2, 1, 0};
-    constexpr int transforms[49] = {0, 0, 0, 0, 1, 1, 1, 4, 0, 0, 0, 1, 1, 5, 4, 4, 0, 0, 1, 5, 5, 4, 4, 4, 0, 5, 5, 5, 6, 6, 2, 2, 3, 7, 7, 6, 2, 2, 2, 3, 3, 7, 2, 2, 2, 2, 3, 3, 3};
     u64 rows[9][2]{}, wideRows[7][3];
     int score = w.tempo[phase], columns[7], rowCodes[7];
     u64 ownT = transposeBoard(own), oppT = transposeBoard(opp);
     for (int y = 0; y < 7; ++y) {
         int a = (own >> (8 * y)) & 127, b = (opp >> (8 * y)) & 127;
         rowCodes[y] = T().ternaryRow[a] + 2 * T().ternaryRow[b];
-        if (wide) for (int k = 0; k < 3; ++k) wideRows[y][k] = wide->rows[a][k] + 2 * wide->rows[b][k];
-        if constexpr (Expanded) score += expanded->line[phase][std::min(y, 6 - y)][rowCodes[y]];
-        else score += w.line[phase][std::min(y, 6 - y)][T().lineOrbit[rowCodes[y]]];
+        for (int k = 0; k < 3; ++k) wideRows[y][k] = wide->rows[a][k] + 2 * wide->rows[b][k];
+        score += expanded->line[phase][std::min(y, 6 - y)][rowCodes[y]];
         for (int j = 0; j < 2; ++j) rows[y + 1][j] = T().neighborRow[a][j] + 2 * T().neighborRow[b][j];
         columns[y] = T().ternaryRow[(ownT >> (8 * y)) & 127] + 2 * T().ternaryRow[(oppT >> (8 * y)) & 127];
     }
     for (int y = 1; y < 6; ++y) {
         u64 a = rows[y][0] + 27 * rows[y + 1][0] + 729 * rows[y + 2][0];
         u64 b = rows[y][1] + 27 * rows[y + 1][1] + 729 * rows[y + 2][1];
-        for (int x = 1; x < 3; ++x) { int s = 7 * y + 2 * x; int code = (a >> (16 * x)) & 65535; if constexpr (Expanded) score += expanded->table[phase][5 * (y - 1) + 2 * x - 1][code]; else score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
-        for (int x = 0; x < 3; ++x) { int s = 7 * y + 2 * x + 1; int code = (b >> (16 * x)) & 65535; if constexpr (Expanded) score += expanded->table[phase][5 * (y - 1) + 2 * x][code]; else score += w.table[phase][regions[s] - 4][transforms[s] ? T().patternSym[transforms[s]][code] : code]; }
+        for (int x = 1; x < 3; ++x) score += expanded->table[phase][5 * (y - 1) + 2 * x - 1][(a >> (16 * x)) & 65535];
+        for (int x = 0; x < 3; ++x) score += expanded->table[phase][5 * (y - 1) + 2 * x][(b >> (16 * x)) & 65535];
     }
-    for (int x = 0; x < 7; ++x) {
-        if constexpr (Expanded) score += expanded->line[phase][std::min(x, 6 - x)][columns[x]];
-        else score += w.line[phase][std::min(x, 6 - x)][T().lineOrbit[columns[x]]];
-    }
+    for (int x = 0; x < 7; ++x) score += expanded->line[phase][std::min(x, 6 - x)][columns[x]];
     for (int band = 0; band < 3; ++band) {
         int outside[4] = {rowCodes[band], columns[6 - band], rowCodes[6 - band], columns[band]};
         int inside[4] = {rowCodes[band + 1], columns[5 - band], rowCodes[5 - band], columns[band + 1]};
@@ -158,7 +107,7 @@ ATAXX_HD inline int patternEvaluate(const Pos& p, const PatternWeights& w, const
             for (int j = 0; j < 4; ++j) score += w.edge[phase][band ? band + 3 : j][(codes >> (16 * j)) & 65535];
         }
     }
-    if (wide) for (int y = 0; y < 3; ++y) {
+    for (int y = 0; y < 3; ++y) {
         u64 codes = wideRows[y][0] + 27 * wideRows[y+1][1] + 243 * wideRows[y+2][2] + 2187 * wideRows[y+3][1] + 19683 * wideRows[y+4][0];
         for (int x = 0; x < 3; ++x) score += wide->table[phase][wide->map[(codes >> (20*x)) & 1048575]];
     }
@@ -213,7 +162,6 @@ struct OrderTree {
     std::int64_t values[2048];
 };
 
-template<class H>
 struct SearchCore {
     struct Frame {
         Move moves[NMOVES], killer;
@@ -222,19 +170,13 @@ struct SearchCore {
     Entry* table;
     EvalEntry* evalTable;
     int tableBits = 21;
-    bool legacy = false;
-    const Weights* evalWeights = nullptr;
     const PatternWeights* patterns = nullptr;
     const WideWeights* wide = nullptr;
     const ExpandedPatternWeights* expandedPatterns = nullptr;
     const DirectionalWeights* directional = nullptr;
     const ExpandedDirectionalWeights* expandedDirectional = nullptr;
-    std::uint64_t nodeLimit = 0;
     Frame* frames;
     OrderTree* orders = nullptr;
-    Pos* samples = nullptr;
-    int sampleCount = 0;
-    std::uint64_t sampleSeen = 0;
     int cutoffs[NMOVES]{};
     int reductions[64][64];
     u64 contexts[PLYCAP + 1];
@@ -243,15 +185,12 @@ struct SearchCore {
     SearchStats statistics;
     bool stopped = false;
     Move rootBest;
-    H hist;
+    History hist;
     std::uint8_t age = 0;
 
-    ATAXX_HD int negamax(const Pos& p, int depth, int alpha, int beta, bool allowNull = true, bool synthetic = false, Move excluded = NMOVES) {
+    int negamax(const Pos& p, int depth, int alpha, int beta, bool allowNull = true, bool synthetic = false, Move excluded = NMOVES) {
         ++statistics.nodes;
-        if (nodeLimit && statistics.nodes > nodeLimit) stopped = true;
-#ifndef __CUDA_ARCH__
-        if (!nodeLimit && (statistics.nodes & 1023) == 0 && std::clock() >= deadline) stopped = true;
-#endif
+        if ((statistics.nodes & 1023) == 0 && std::clock() >= deadline) stopped = true;
         if (stopped) return 0;
         u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1];
         Outcome o;
@@ -259,7 +198,7 @@ struct SearchCore {
             int margin = o.count[p.side] - o.count[p.side ^ 1];
             return margin > 0 ? win + margin : margin < 0 ? margin - win : 0;
         }
-        if (!legacy && !synthetic) {
+        if (!synthetic) {
             int k = hist.ply();
             for (int i = hist.lastClone[k]; i <= k - 2; ++i)
                 if (hist.s[i] == hist.s[k]) {
@@ -270,12 +209,10 @@ struct SearchCore {
         if (depth <= 0) return evaluate(p);
         bool root = p.ply == rootPly, pv = beta > alpha + 1, exact = p.ply + depth < PLYCAP;
         u64 context = 0;
-        if (!legacy && !synthetic) {
-            context = mix(contexts[hist.ply()], p.ply + 1);
-        }
+        if (!synthetic) context = mix(contexts[hist.ply()], p.ply + 1);
         Entry& cached = table[(own * 0x9e3779b97f4a7c15ULL ^ opp) * 0xbf58476d1ce4e5b9ULL >> (64 - tableBits)];
         bool boardHit = cached.own == own && cached.opp == opp;
-        bool hit = boardHit && (legacy || (!synthetic && cached.context == context));
+        bool hit = boardHit && !synthetic && cached.context == context;
         if (excluded == NMOVES && hit && exact && !root && cached.depth >= depth
             && (!cached.bound || (cached.bound > 0 && cached.score >= beta) || (cached.bound < 0 && cached.score <= alpha)))
             return cached.score;
@@ -286,14 +223,14 @@ struct SearchCore {
                 Pos pass = p;
                 pass.side ^= 1;
                 pass.ply++;
-                int score = -negamax(pass, depth - 3 - depth / 6, -beta, -beta + 1, false, !legacy || synthetic);
+                int score = -negamax(pass, depth - 3 - depth / 6, -beta, -beta + 1, false, true);
                 if (stopped) return 0;
                 if (score >= beta) return score;
             }
         }
-        Move preferred = root ? rootBest : (legacy ? hit : boardHit) ? cached.move : NMOVES;
+        Move preferred = root ? rootBest : boardHit ? cached.move : NMOVES;
         Move singularMove = NMOVES;
-        if (!legacy && excluded == NMOVES && !root && !synthetic && depth >= 8 && p.ply - rootPly + depth < 64 && hit && cached.bound >= 0 && cached.depth >= depth - 3 && std::abs(cached.score) < win && preferred != NMOVES) {
+        if (excluded == NMOVES && !root && !synthetic && depth >= 8 && p.ply - rootPly + depth < 64 && hit && cached.bound >= 0 && cached.depth >= depth - 3 && std::abs(cached.score) < win && preferred != NMOVES) {
             int bound = cached.score - 4 * depth;
             int alternative = negamax(p, (depth - 1) / 2, bound - 1, bound, false, false, preferred);
             if (stopped) return 0;
@@ -307,11 +244,9 @@ struct SearchCore {
             for (int i = 0; i < size; ++i)
                 if (frame.moves[i] == excluded) frame.moves[i--] = frame.moves[--size];
         if (!size) return -win - 49;
-        if (!legacy) {
-            bool found = false;
-            for (int i = 0; i < size; ++i) found |= frame.moves[i] == preferred;
-            if (!found) preferred = NMOVES;
-        }
+        bool found = false;
+        for (int i = 0; i < size; ++i) found |= frame.moves[i] == preferred;
+        if (!found) preferred = NMOVES;
         if (excluded == NMOVES && preferred == NMOVES && depth >= 4) --depth;
         const Tables& t = T();
         int codes[SQ], phase = popcnt(ON & ~(own | opp)) * 6 / 50;
@@ -320,9 +255,7 @@ struct SearchCore {
             frame.scores[i] = cutoffs[frame.moves[i]];
             if (frame.moves[i] == preferred) preferredIndex = i;
         }
-#ifndef __CUDA_ARCH__
         OrderTree& order = orders[p.ply - rootPly];
-#endif
         bool ordered = false;
         int originalAlpha = alpha, best = -infinity;
         Move bestMove = preferred;
@@ -331,45 +264,24 @@ struct SearchCore {
             if (!i && preferredIndex >= 0) next = preferredIndex;
             else {
                 if (!ordered) {
-                    if (!legacy) patternCodes(own, opp, codes);
+                    patternCodes(own, opp, codes);
                     for (int j = i; j < size; ++j) {
                         Move move = frame.moves[j];
-                        u64 ring = t.ring1[move % SQ];
-                        int score = 1000 * popcnt(ring & opp) + frame.scores[j];
-                        score += move < SQ ? 500 + 100 * popcnt(ring & own) : -200 * popcnt(t.ring1[sqOfBit(t.jumpOrigin[move % SQ][move / SQ - 1])] & own);
-                        if (!legacy) {
-                            int to = move % SQ, kind = move / SQ, family = t.moveFamily[kind];
-#ifdef __CUDA_ARCH__
-                            int transform = t.moveTransform[kind];
-                            int code = t.patternSym[transform][codes[to]];
-                            score = directional->destination[family][code % 81 + code / 243 * 81];
-                            if (kind) {
-                                int source = t.patternSym[transform][codes[sqOfBit(t.jumpOrigin[to][kind - 1])]];
-                                score += directional->source[family - 1][source % 81 + source / 243 * 81];
-                            }
-#else
-                            score = expandedDirectional->destination[kind][codes[to]];
-                            if (kind) score += expandedDirectional->source[kind - 1][codes[sqOfBit(t.jumpOrigin[to][kind - 1])]];
-#endif
-                            score += directional->square[family][to] + directional->bias[phase][family] + frame.scores[j];
-                        }
+                        int to = move % SQ, kind = move / SQ, family = t.moveFamily[kind];
+                        int score = expandedDirectional->destination[kind][codes[to]];
+                        if (kind) score += expandedDirectional->source[kind - 1][codes[sqOfBit(t.jumpOrigin[to][kind - 1])]];
+                        score += directional->square[family][to] + directional->bias[phase][family] + frame.scores[j];
                         if (move == frame.killer) score += 400;
                         frame.scores[j] = score;
                     }
-#ifndef __CUDA_ARCH__
                     order.size = 1;
                     while (order.size < size) order.size *= 2;
                     for (int j = 0; j < order.size; ++j)
                         order.values[order.size + j] = j >= i && j < size ? std::int64_t(frame.scores[j]) * 1024 + 1023 - j : -(1LL << 60);
                     for (int j = order.size - 1; j; --j) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
-#endif
                     ordered = true;
                 }
-#ifdef __CUDA_ARCH__
-                for (int j = i + 1; j < size; ++j) if (frame.scores[j] > frame.scores[next]) next = j;
-#else
                 next = 1023 - int(order.values[1] & 1023);
-#endif
             }
             int savedScore = frame.scores[i];
             frame.scores[i] = frame.scores[next];
@@ -377,20 +289,18 @@ struct SearchCore {
             Move savedMove = frame.moves[i];
             frame.moves[i] = frame.moves[next];
             frame.moves[next] = savedMove;
-#ifndef __CUDA_ARCH__
             if (ordered) {
                 order.values[order.size + next] = std::int64_t(frame.scores[next]) * 1024 + 1023 - next;
                 order.values[order.size + i] = -(1LL << 60);
                 for (int j = (order.size + i) / 2; j; j /= 2) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
                 for (int j = (order.size + next) / 2; j; j /= 2) order.values[j] = std::max(order.values[2 * j], order.values[2 * j + 1]);
             }
-#endif
             Move move = frame.moves[i];
             if (!pv && depth <= 2 && i >= 6 * depth && best > -win) break;
             Pos child = p;
             hist.push(p, move);
             int k = hist.ply();
-            if (!legacy) contexts[k] = mix((move < SQ ? 0 : contexts[k - 1]) ^ hist.s[k].b[0], hist.s[k].b[1]);
+            contexts[k] = mix((move < SQ ? 0 : contexts[k - 1]) ^ hist.s[k].b[0], hist.s[k].b[1]);
             play(child, move);
             int score, nextDepth = depth - 1 + (move == singularMove);
             if (!i || depth == 1) score = -negamax(child, nextDepth, -beta, -alpha, true, synthetic);
@@ -423,41 +333,25 @@ struct SearchCore {
                 bestMove, static_cast<std::int8_t>(exact ? depth : 0)};
         return best;
     }
-    ATAXX_HD void init() {
+    void init() {
         for (int depth = 1; depth < 64; ++depth)
             for (int i = 1; i < 64; ++i)
                 reductions[depth][i] = static_cast<int>(0.5 + log(double(depth)) * log(double(i)) / 1.5);
     }
-    ATAXX_HD int evaluate(const Pos& p) {
-        if (samples && statistics.nodes % 251 == 0) {
-            ++sampleSeen;
-            std::uint64_t index = sampleSeen <= 4096 ? sampleSeen - 1 : mix(sampleSeen, 0x9e3779b97f4a7c15ULL) % sampleSeen;
-            if (index < 4096) samples[index] = p;
-            sampleCount = std::min(sampleSeen, std::uint64_t(4096));
-        }
-#ifndef __CUDA_ARCH__
+    int evaluate(const Pos& p) {
         u64 own = p.bb[p.side], opp = p.bb[p.side ^ 1];
         EvalEntry& entry = evalTable[((own * 0x9e3779b97f4a7c15ULL ^ opp) * 0xbf58476d1ce4e5b9ULL) >> 46];
         if (entry.own == own && entry.opp == opp) return entry.score;
-#endif
-#ifdef __CUDA_ARCH__
-        int score = legacy ? tableEvaluate(p, evalWeights) : patternEvaluate(p, *patterns, nullptr, wide);
-#else
-        int score = legacy ? tableEvaluate(p, evalWeights) : expandedPatterns && expandedPatterns->source == patterns ? patternEvaluate<true>(p, *patterns, expandedPatterns, wide) : patternEvaluate(p, *patterns, nullptr, wide);
-#endif
-#ifndef __CUDA_ARCH__
+        int score = patternEvaluate(p, *patterns, expandedPatterns, wide);
         entry = {own, opp, score};
-#endif
         return score;
     }
-    ATAXX_HD Move choose(const Pos& pos, const H& history, std::clock_t start, double seconds, std::uint64_t nodes = 0, int maxDepth = 64) {
+    Move choose(const Pos& pos, const History& history, std::clock_t start, double seconds) {
         statistics = {};
         rootPly = pos.ply;
         hist = history;
-        if (!legacy)
-            for (int i = 0; i <= hist.ply(); ++i)
-                contexts[i] = mix((i == hist.lastClone[i] ? 0 : contexts[i - 1]) ^ hist.s[i].b[0], hist.s[i].b[1]);
-        nodeLimit = nodes;
+        for (int i = 0; i <= hist.ply(); ++i)
+            contexts[i] = mix((i == hist.lastClone[i] ? 0 : contexts[i - 1]) ^ hist.s[i].b[0], hist.s[i].b[1]);
         deadline = start + static_cast<std::clock_t>(seconds * CLOCKS_PER_SEC);
         stopped = false;
         ++age;
@@ -466,7 +360,7 @@ struct SearchCore {
         Outcome outcome;
         int size = terminal(pos, outcome) ? 0 : genLegal(pos, hist, moves), score = 0;
         rootBest = moves[0];
-        for (int depth = 1; size > 1 && depth <= std::min(maxDepth, PLYCAP - rootPly) && !stopped && std::abs(score) < win; ++depth) {
+        for (int depth = 1; size > 1 && depth <= std::min(64, PLYCAP - rootPly) && !stopped && std::abs(score) < win; ++depth) {
             for (int window = depth < 4 ? infinity : 80; !stopped; window *= 4) {
                 int alpha = std::max(score - window, -infinity), beta = std::min(score + window, int(infinity));
                 int value = negamax(pos, depth, alpha, beta);
@@ -479,9 +373,7 @@ struct SearchCore {
                 }
             }
         }
-#ifndef __CUDA_ARCH__
         statistics.seconds = static_cast<double>(std::clock() - start) / CLOCKS_PER_SEC;
-#endif
         return rootBest;
     }
 };
@@ -489,12 +381,11 @@ struct SearchCore {
 class Search {
     std::vector<Entry> table = std::vector<Entry>(1 << 21);
     std::vector<EvalEntry> evaluations = std::vector<EvalEntry>(1 << 18);
-    std::vector<SearchCore<History>::Frame> frames = std::vector<SearchCore<History>::Frame>(66);
+    std::vector<SearchCore::Frame> frames = std::vector<SearchCore::Frame>(66);
     std::vector<OrderTree> orders = std::vector<OrderTree>(66);
 public:
-    SearchCore<History> core;
+    SearchCore core;
     Search() {
-        core.evalWeights = weights;
         core.patterns = &patternWeights();
         core.wide = &wideWeights();
         core.expandedPatterns = &expandedPatternWeights();

@@ -1,10 +1,18 @@
-import argparse
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import onnx
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from onnx import numpy_helper
+
+from ataxx.model import NMOVES, SHIFTS
+
+DX = [-2, -1, 0, 1, 2, -2, 2, -2, 2, -2, 2, -2, -1, 0, 1, 2]
+DY = [-2, -2, -2, -2, -2, -1, -1, 0, 0, 1, 1, 2, 2, 2, 2, 2]
 
 
 def rms(x, w):
@@ -104,24 +112,79 @@ def load(path):
     return net.eval()
 
 
-def main():
-    from onnxruntime.quantization import QuantType, quantize_dynamic
+class Teacher:
+    def __init__(self, path, gpus, floor=0.01, batch=4096):
+        self.device, self.floor, self.batch = "cuda:0", floor, batch
+        xy = torch.arange(49)
+        dx, dy = xy[None] % 7 - xy[:, None] % 7, xy[None] // 7 - xy[:, None] // 7
+        d = torch.maximum(dx.abs(), dy.abs())
+        self.near, self.far = (d == 1).float().to(self.device), (d == 2).to(self.device)
+        kind = torch.zeros(5, 5, dtype=torch.long)
+        for k in range(16):
+            kind[DX[k] + 2, DY[k] + 2] = k + 1
+        self.move = (kind[(dx + 2).clamp(0, 4), (dy + 2).clamp(0, 4)] * 49 + xy[None]).to(self.device)
+        self.models = [(torch.compile(load(path).half().to(f"cuda:{g}")), f"cuda:{g}") for g in gpus]
+        self.pool = ThreadPoolExecutor(len(self.models))
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("src")
-    parser.add_argument("dst")
-    args = parser.parse_args()
-    model = onnx.load(args.src)
-    weights = {t.name for t in model.graph.initializer}
-    nodes = [n.name for n in model.graph.node if n.op_type == "MatMul" and n.name.startswith("/model/blocks.") and n.input[1] in weights]
-    quantize_dynamic(args.src, args.dst, op_types_to_quantize=["MatMul"], nodes_to_quantize=nodes,
-                     weight_type=QuantType.QInt8, per_channel=True, reduce_range=True, extra_options={"MatMulConstBOnly": True})
-    model = onnx.load(args.dst)
-    for prop in model.metadata_props:
-        if prop.key == "is_int8":
-            prop.value = "true"
-    onnx.save(model, args.dst)
+    def forward(self, k, x, g):
+        model, dev = self.models[k % len(self.models)]
+        n = len(x)
+        padding = -n % min(1024, 1 << (n - 1).bit_length())
+        x, g = F.pad(x, (0, 0, 0, 0, 0, 0, 0, padding)), F.pad(g, (0, 0, 0, padding))
+        with torch.no_grad():
+            policy, value = model(x.to(dev).half(), g.to(dev).half())[:2]
+        return policy[:n, 0, :49].float().to(self.device), value[:n].float().to(self.device)
+
+    def run(self, own, opp, chosen=None):
+        n = len(own)
+        x = torch.zeros(n, 22, 49, device=self.device)
+        g = torch.zeros(n, 19, device=self.device)
+        x[:, 0], x[:, 1], x[:, 2] = 1, own, opp
+        g[:, 3] = g[:, 9] = 1
+        if chosen is not None:
+            x[torch.arange(n, device=self.device), 4, chosen] = 1
+            g[:, 0] = 1
+        x = x.view(-1, 22, 7, 7)
+        step = min(self.batch, -(-n // len(self.models)))
+        parts = [(k, x[i:i + step], g[i:i + step]) for k, i in enumerate(range(0, n, step))]
+        out = list(self.pool.map(lambda a: self.forward(*a), parts))
+        return torch.cat([p for p, v in out]), torch.cat([v for p, v in out])
+
+    def __call__(self, bb, side):
+        bits = (bb[:, :, None] >> SHIFTS.to(self.device) & 1).bool()
+        s = side.view(-1, 1).bool()
+        own, opp = torch.where(s, bits[:, 1], bits[:, 0]), torch.where(s, bits[:, 0], bits[:, 1])
+        empty = ~(own | opp)
+        clone = empty & (own.float() @ self.near > 0)
+        origin = own & (empty.float() @ self.far.float() > 0)
+        logits, value = self.run(own.float(), opp.float())
+        first = logits.masked_fill(~(clone | origin), -1e9).softmax(1)
+        joint = torch.zeros(len(own), NMOVES, device=self.device)
+        joint[:, :49] = first * clone
+        row, sq = ((first > self.floor) & origin).nonzero(as_tuple=True)
+        if len(row):
+            reach = empty[row] & self.far[sq]
+            second = self.run(own[row].float(), opp[row].float(), sq)[0].masked_fill(~reach, -1e9).softmax(1) * reach
+            joint.index_put_((row[:, None].expand(-1, 49), self.move[sq]), first[row, sq, None] * second, accumulate=True)
+        v = value.softmax(1)
+        return joint / joint.sum(1, keepdim=True), v[:, 0] - v[:, 1]
 
 
-if __name__ == "__main__":
-    main()
+def label(teacher, src, dst, gpus, chunk=16384):
+    teacher = Teacher(teacher, range(gpus))
+    dst.mkdir(parents=True, exist_ok=True)
+    while True:
+        for path in sorted(p for p in src.glob("*.npy") if ".tmp" not in p.name):
+            rows = np.load(path)
+            for i in range(0, len(rows), chunk):
+                part = rows[i:i + chunk]
+                policy, q = teacher(torch.from_numpy(part["bb"].astype(np.int64)).cuda(), torch.from_numpy(part["side"].astype(np.int64)).cuda())
+                top = policy.topk(32, 1)
+                cnt = (top.values * 65535).round()
+                part["idx"], part["cnt"], part["n"] = top.indices.cpu().numpy(), cnt.cpu().numpy(), (cnt > 0).sum(1).cpu().numpy()
+                q = (q * 32767).round().clamp(-32767, 32767)
+                part["q"] = torch.where(q == 0, 1, q).cpu().numpy()
+            np.save(dst / f"{path.stem}.tmp.npy", rows)
+            os.rename(dst / f"{path.stem}.tmp.npy", dst / path.name)
+            path.unlink()
+        time.sleep(30)

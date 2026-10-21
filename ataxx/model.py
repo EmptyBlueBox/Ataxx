@@ -1,5 +1,3 @@
-import argparse
-
 import numpy as np
 
 import torch
@@ -7,6 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 PLANES, KINDS, SQ = 14, 17, 49
+NMOVES = KINDS * SQ
+BLOCKS, CHANNELS, HEADS, RATIO = 6, 64, 4, 2
+SHIFTS = torch.tensor([(s // 7) * 8 + s % 7 for s in range(SQ)])
 
 
 def pooled(x):
@@ -40,33 +41,30 @@ class Linear(nn.Linear):
 
 
 class Attention(nn.Module):
-    def __init__(self, c, heads, ratio, gelu, quant, key, value, soft):
+    def __init__(self, quant):
         super().__init__()
-        self.heads, self.key, self.value, self.soft = heads, key or c // heads, value or c // heads, soft
+        c = CHANNELS
         self.norm1 = nn.LayerNorm(c)
-        self.qkv = Linear(c, heads * (2 * self.key + self.value), quant)
-        self.proj = Linear(heads * self.value, c, quant)
-        self.bias = nn.Parameter(torch.zeros(heads, SQ, SQ))
+        self.qkv = Linear(c, 3 * c, quant)
+        self.proj = Linear(c, c, quant)
+        self.bias = nn.Parameter(torch.zeros(HEADS, SQ, SQ))
         self.norm2 = nn.LayerNorm(c)
-        self.mlp = nn.Sequential(Linear(c, ratio * c, quant), nn.GELU() if gelu else nn.ReLU(), Linear(ratio * c, c, quant))
+        self.mlp = nn.Sequential(Linear(c, RATIO * c, quant), nn.GELU(), Linear(RATIO * c, c, quant))
 
     def forward(self, x):
         n = len(x)
-        h, k = self.heads, self.key
-        q, key, v = self.qkv(self.norm1(x)).split([h * k, h * k, h * self.value], 2)
-        q, key, v = (t.view(n, SQ, h, -1).transpose(1, 2) for t in (q, key, v))
-        a = q @ key.transpose(-1, -2) * k ** -0.5 + self.bias
-        a = a.softmax(-1) if self.soft else F.relu(a) / SQ
+        q, k, v = (t.view(n, SQ, HEADS, -1).transpose(1, 2) for t in self.qkv(self.norm1(x)).chunk(3, 2))
+        a = (q @ k.transpose(-1, -2) * (CHANNELS // HEADS) ** -0.5 + self.bias).softmax(-1)
         x = x + self.proj((a @ v).transpose(1, 2).reshape(n, SQ, -1))
         return x + self.mlp(self.norm2(x))
 
 
 class Tokens(nn.Module):
-    def __init__(self, c, blocks, heads, ratio, gelu, quant, key, value, soft):
+    def __init__(self, quant):
         super().__init__()
-        self.position = nn.Parameter(torch.zeros(SQ, c))
-        self.blocks = nn.Sequential(*[Attention(c, heads, ratio, gelu, quant, key, value, soft) for _ in range(blocks)])
-        self.norm = nn.LayerNorm(c)
+        self.position = nn.Parameter(torch.zeros(SQ, CHANNELS))
+        self.blocks = nn.Sequential(*[Attention(quant) for _ in range(BLOCKS)])
+        self.norm = nn.LayerNorm(CHANNELS)
 
     def forward(self, x):
         n, c = x.shape[:2]
@@ -74,12 +72,12 @@ class Tokens(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self, blocks=6, channels=64, heads=4, ratio=2, gelu=True, quant=False, key=0, value=0, soft=True):
+    def __init__(self, quant=False):
         super().__init__()
-        c = channels
-        self.config = dict(blocks=blocks, channels=channels, heads=heads, ratio=ratio, gelu=gelu, quant=quant, key=key, value=value, soft=soft)
+        c = CHANNELS
+        self.config = dict(quant=quant)
         self.stem = nn.Conv2d(PLANES, c, 3, padding=1)
-        self.blocks = Tokens(c, blocks, heads, ratio, gelu, quant, key, value, soft)
+        self.blocks = Tokens(quant)
         self.policy1 = nn.Conv2d(c, 32, 1)
         self.policy_pool = nn.Linear(2 * c, 32)
         self.policy2 = nn.Conv2d(32, KINDS, 1)
@@ -118,11 +116,12 @@ def load(path, device="cpu"):
 
 def export(net, path):
     state = net.cpu().float().state_dict()
+    quant = net.config["quant"]
     raw = lambda *keys: b"".join(state[k].numpy().astype(np.float32).tobytes() for k in keys)
 
     def dense(name):
         w, b = state[name + ".weight"], state[name + ".bias"]
-        if not net.config["quant"]:
+        if not quant:
             return raw(name + ".weight", name + ".bias")
         lo, s = state[name + ".lo"], (state[name + ".hi"] - state[name + ".lo"]) / 255
         scale = w.abs().amax(1, keepdim=True) / 127
@@ -131,22 +130,10 @@ def export(net, path):
                 + (s * scale[:, 0]).numpy().astype(np.float32).tobytes() + (b + lo * scale[:, 0] * q.sum(1)).numpy().astype(np.float32).tobytes())
 
     with open(path, "wb") as f:
-        f.write(np.array([net.config[k] for k in ("blocks", "channels", "heads", "ratio", "gelu", "quant", "key", "value", "soft")], np.int32).tobytes())
+        f.write(np.array([BLOCKS, CHANNELS, HEADS, RATIO, 1, quant, 0, 0, 1], np.int32).tobytes())
         f.write(raw("stem.weight", "stem.bias", "blocks.position"))
-        for i in range(net.config["blocks"]):
+        for i in range(BLOCKS):
             k = f"blocks.blocks.{i}."
             f.write(raw(k + "norm1.weight", k + "norm1.bias") + dense(k + "qkv") + dense(k + "proj") + raw(k + "bias", k + "norm2.weight", k + "norm2.bias")
                     + dense(k + "mlp.0") + dense(k + "mlp.2"))
         f.write(raw("blocks.norm.weight", "blocks.norm.bias", *[f"{h}.{k}" for h in ("policy1", "policy_pool", "policy2", "value1", "value2", "value3") for k in ("weight", "bias")]))
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--pt", required=True)
-    parser.add_argument("--out", required=True)
-    args = parser.parse_args()
-    export(load(args.pt), args.out)
-
-
-if __name__ == "__main__":
-    main()

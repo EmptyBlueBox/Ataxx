@@ -1,22 +1,10 @@
 # Ataxx
 
-## Python
-
-MCTS bot with a neural network. Linux x86-64, NVIDIA CUDA.
+Ataxx_Python is #1 on the [Botzone Ataxx ladder](https://www.botzone.org.cn/game/ranklist/5809c7647f65182b044b5e3b), Ataxx_CPP is the #1 C++ bot.
 
 ```sh
-cd python
-make -j
-uv run -m ataxx
+uv run -m ataxx.train --teacher KataAtaxx.onnx   # distil KataAtaxx into weights/ from scratch
+uv run -m ataxx.package py|cpp|search            # build a Botzone submission in out/
 ```
 
-## C++
-
-Highest-ranked C++ bot on the [Ataxx botzone ladder](https://www.botzone.org.cn/game/ranklist/5809c7647f65182b044b5e3b).
-
-```sh
-cd cpp
-cmake -S . -B build
-cmake --build build -j
-./build/ataxx
-```
+Both online bots run the neural engine; `search` (pure alpha-beta) is not deployed.

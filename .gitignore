@@ -1,9 +1,7 @@
-**/build*/
-**/.venv/
-**/.deps/
-**/__pycache__/
-**/ataxx.save
-/python/run/
-/python/out/
+build/
+.venv/
+__pycache__/
+/run/
+/out/
 .vscode
 pwd.txt
